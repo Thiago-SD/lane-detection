@@ -10,6 +10,10 @@ class Point:
         self.r = r
         self.g = g
         self.b = b
+    def __str__(self):
+        return f"{self.x} {self.y} {self.z} {self.r} {self.g} {self.b}"
+    def getXYZ(self):
+        return (self.x, self.y, self.z)
 
 velodyne_vertical_angles = [
 		-30.6700000, -29.3300000, -28.0000000, -26.6700000, -25.3300000, -24.0000000, -22.6700000, -21.3300000,
@@ -22,6 +26,7 @@ velodyne_vertical_angles = [
 velodyne_ray_order = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31]
 
 
+
 def readLidarFile(file_path):
     try:
         data = np.fromfile(file_path, dtype=np.uint8)
@@ -31,16 +36,32 @@ def readLidarFile(file_path):
         data = None
     return data
 
-def readLidarFolder(base_path, extension=".pointcloud"):
-    point_data = []
+# Função para ler o arquivo .pointcloud e gerar o arquivo .ply dinâmico
+def readLidarFileAndWriteToPLY(file_path, ply_file_path):
+    try:
+        data = np.fromfile(file_path, dtype=np.uint8)
+        # Convertendo os dados binários para pontos 3D
+        points = binaryTo3d(data)
+        # Converte a lista de pontos para um formato que o Open3D pode manipular
+        xyz = np.array([point.getXYZ() for point in points])  # Obtendo coordenadas XYZ dos pontos
+
+        # Criação ou atualização do arquivo .ply
+        point_cloud = o3d.geometry.PointCloud()
+        point_cloud.points = o3d.utility.Vector3dVector(xyz)  # Atribui os pontos 3D ao PointCloud
+
+        # Salva o ponto em um arquivo .ply (com `write_point_cloud` adiciona os pontos dinamicamente)
+        o3d.io.write_point_cloud(ply_file_path, point_cloud, write_ascii=True)
+        #print(f"Arquivo PLY salvo em: {ply_file_path}")
+    except Exception as e:
+        print(f"Erro ao ler o arquivo {file_path}: {e}")
+
+def readLidarFolder(base_path, ply_file_path, extension=".pointcloud"):
     for root, _, files in os.walk(base_path):
         for file in files:
             if file.endswith(extension):
                 file_path = os.path.relpath(os.path.join(root, file), start=base_path)
                 file_path = os.path.join(root, file)
-                point_data.append(readLidarFile(file_path))
-    print(f"Tamanho dos dados: {len(point_data[0])}")
-    return point_data
+                readLidarFileAndWriteToPLY(file_path, ply_file_path)
 
 def computePointVelodyne (v_angle, h_angle, radius, intensity):
     cos_rot_angle = np.cos(h_angle)
@@ -53,12 +74,14 @@ def computePointVelodyne (v_angle, h_angle, radius, intensity):
 
     return Point((xy_distance * cos_rot_angle), (xy_distance * sin_rot_angle), (radius * sin_vert_angle), intensity, intensity, intensity)
 
-def binaryTo3d (binary_data, n_rays):
+def binaryTo3d (binary_data):
     size_double = np.dtype(np.float64).itemsize  # 8 bytes
     size_unsigned_short = np.dtype(np.uint16).itemsize  # 2 bytes
     size_unsigned_char = np.dtype(np.uint8).itemsize  # 1 byte
 
     record_size = size_double + (32 * size_unsigned_short) + (32 * size_unsigned_char)
+
+    n_rays = len(binary_data) // record_size
 
     points = []
 
@@ -81,6 +104,26 @@ def binaryTo3d (binary_data, n_rays):
             points.append (computePointVelodyne(v_angle, -h_angle, l_range, intensities[velodyne_ray_order[j]]))
 
     return points
+
+# Função para escrever o cabeçalho do arquivo .ply
+def write_ply_header(file_path, num_points):
+    with open(file_path, "w") as ply_file:
+        ply_file.write("ply\n")
+        ply_file.write("format ascii 1.0\n")
+        ply_file.write(f"element vertex {num_points}\n")
+        ply_file.write("property float x\n")
+        ply_file.write("property float y\n")
+        ply_file.write("property float z\n")
+        ply_file.write("property uchar red\n")
+        ply_file.write("property uchar green\n")
+        ply_file.write("property uchar blue\n")
+        ply_file.write("end_header\n")
+
+# Função para adicionar pontos dinamicamente ao arquivo .ply
+def append_points_to_ply(file_path, points):
+    with open(file_path, "a") as ply_file:
+        for point in points:
+            ply_file.write(f"{point}\n")
 
 
 def visualizePointCloud(points):
@@ -125,11 +168,9 @@ def main():
     data_path = os.path.join(script_path, "../data")
     print(data_path)
     
-    rawBinary = readLidarFolder(data_path)
-    points = binaryTo3d (rawBinary[0], 1084)
-    visualizePointCloud(points)
-    savePointCloudToPLY(points, data_path+"/pointcloud.ply")
-    #np.savez("../data/pointClouds_dataset.npz", *pointCloudList)
+    readLidarFolder(data_path, data_path+"/pointcloud.ply")
+    point_cloud = o3d.io.read_point_cloud(data_path+"/pointcloud.ply")
+    o3d.visualization.draw_geometries([point_cloud])
 
 if __name__ == "__main__":
     main()
