@@ -166,9 +166,9 @@ def savePointCloudToPLY(points, output_path):
 def main():
     script_path = os.path.dirname(os.path.abspath(__file__))
     data_path = os.path.join(script_path, "../data")
-    print(data_path)
+    #print(data_path)
     
-    readLidarFolder(data_path, data_path+"/pointcloud.ply")
+    #readLidarFolder(data_path, data_path+"/pointcloud.ply")
     point_cloud = o3d.io.read_point_cloud(data_path+"/pointcloud.ply")
     o3d.visualization.draw_geometries([point_cloud])
 
