@@ -36,32 +36,31 @@ def readLidarFile(file_path):
         data = None
     return data
 
-# Função para ler o arquivo .pointcloud e gerar o arquivo .ply dinâmico
 def readLidarFileAndWriteToPLY(file_path, ply_file_path):
     try:
         data = np.fromfile(file_path, dtype=np.uint8)
-        # Convertendo os dados binários para pontos 3D
-        points = binaryTo3d(data)
-        # Converte a lista de pontos para um formato que o Open3D pode manipular
-        xyz = np.array([point.getXYZ() for point in points])  # Obtendo coordenadas XYZ dos pontos
+        points = binaryTo3d(data)  # Converter dados binários em pontos 3D
+        xyz = np.array([point.getXYZ() for point in points])  # Extrair coordenadas XYZ
 
-        # Criação ou atualização do arquivo .ply
+        # Criar nuvem de pontos e salvar no formato .ply
         point_cloud = o3d.geometry.PointCloud()
-        point_cloud.points = o3d.utility.Vector3dVector(xyz)  # Atribui os pontos 3D ao PointCloud
-
-        # Salva o ponto em um arquivo .ply (com `write_point_cloud` adiciona os pontos dinamicamente)
+        point_cloud.points = o3d.utility.Vector3dVector(xyz)
         o3d.io.write_point_cloud(ply_file_path, point_cloud, write_ascii=True)
-        #print(f"Arquivo PLY salvo em: {ply_file_path}")
     except Exception as e:
-        print(f"Erro ao ler o arquivo {file_path}: {e}")
+        print(f"Erro ao processar o arquivo {file_path}: {e}")
 
-def readLidarFolder(base_path, ply_file_path, extension=".pointcloud"):
+def readLidarFolder(base_path, ply_output_dir, extension=".pointcloud"):
+    os.makedirs(ply_output_dir, exist_ok=True)  # Garantir que o diretório de saída exista
+
     for root, _, files in os.walk(base_path):
         for file in files:
             if file.endswith(extension):
-                file_path = os.path.relpath(os.path.join(root, file), start=base_path)
                 file_path = os.path.join(root, file)
-                readLidarFileAndWriteToPLY(file_path, ply_file_path)
+                subdir_name = os.path.basename(root)  # Nome do subdiretório atual
+                ply_file_path = os.path.join(ply_output_dir, f"{subdir_name}.ply")
+
+                # Processar e gerar o arquivo .ply
+                readLidarFileAndWriteToPLY(file_path, ply_file_path) 
 
 def computePointVelodyne (v_angle, h_angle, radius, intensity):
     cos_rot_angle = np.cos(h_angle)
@@ -167,9 +166,9 @@ def main():
     script_path = os.path.dirname(os.path.abspath(__file__))
     data_path = os.path.join(script_path, "../data")
     #print(data_path)
-    
-    #readLidarFolder(data_path, data_path+"/pointcloud.ply")
-    point_cloud = o3d.io.read_point_cloud(data_path+"/pointcloud.ply")
+
+    #readLidarFolder(data_path, data_path+"/pointclouds")
+    point_cloud = o3d.io.read_point_cloud(data_path+"/pointclouds/1682191900.ply")
     o3d.visualization.draw_geometries([point_cloud])
 
 if __name__ == "__main__":
