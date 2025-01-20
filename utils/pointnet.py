@@ -1,183 +1,122 @@
-import open3d as o3d
-import numpy as np
-from sklearn.cluster import DBSCAN
+import os
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-import os
+import open3d as o3d
+import numpy as np
+import matplotlib.pyplot as plt
 
-# 1. Seleção da Região de Interesse (ROI)
-def segment_road_with_ransac(pcd, x_range=(-70, 70), y_range=(-10, 10)):
-    bbox = pcd.get_axis_aligned_bounding_box()
-    bbox.min_bound = [x_range[0], y_range[0], -float("inf")]
-    bbox.max_bound = [x_range[1], y_range[1], float("inf")]
-    roi_cloud = pcd.crop(bbox)
 
-    plane_model, inlier_indices = roi_cloud.segment_plane(
-        distance_threshold=0.07, ransac_n=3, num_iterations=200
-    )
-    road_cloud = roi_cloud.select_by_index(inlier_indices)
-    return road_cloud
+class PointCloudDataset(Dataset):
+    def __init__(self, ply_dir, labels_file):
+        self.ply_files = [os.path.join(ply_dir, f) for f in os.listdir(ply_dir) if f.endswith('.ply')]
+        self.labels = self.load_labels(labels_file)
 
-# 2. Detecção de Pontos de Meio-Fio
-def detect_curb_points(road_cloud, segment_length=0.4, density_threshold=3):
-    points = np.asarray(road_cloud.points)
-    y_coords = points[:, 1]
-    segments = np.arange(y_coords.min(), y_coords.max(), segment_length)
-
-    curb_points = []
-    road_points = []
-
-    for i in range(len(segments) - 1):
-        segment_mask = (y_coords >= segments[i]) & (y_coords < segments[i + 1])
-        segment_points = points[segment_mask]
-        density = len(segment_points) / (segments[i + 1] - segments[i])
-
-        if density > density_threshold:
-            curb_points.append(segment_points)
-        else:
-            road_points.append(segment_points)
-
-    curb_points = np.vstack(curb_points) if curb_points else np.empty((0, 3))
-    road_points = np.vstack(road_points) if road_points else np.empty((0, 3))
-
-    curb_cloud = o3d.geometry.PointCloud()
-    curb_cloud.points = o3d.utility.Vector3dVector(curb_points)
-
-    road_cloud.points = o3d.utility.Vector3dVector(road_points)
-
-    return road_cloud, curb_cloud
-
-# 3. Detecção de Marcações de Faixa
-def detect_lane_markings(road_cloud):
-    points = np.asarray(road_cloud.points)
-    if points.size == 0:
-        print("Aviso: Nenhuma nuvem de pontos para processar.")
-        return o3d.geometry.PointCloud()  # Retorna uma nuvem vazia
-
-    z_coords = points[:, 2]
-    threshold = np.mean(z_coords) + 1.5 * np.std(z_coords)
-    lane_markings = points[z_coords > threshold]
-
-    if lane_markings.size == 0:
-        print("Aviso: Nenhuma marcação de faixa detectada.")
-        return o3d.geometry.PointCloud()  # Retorna uma nuvem de pontos vazia
-
-    lane_cloud = o3d.geometry.PointCloud()
-    lane_cloud.points = o3d.utility.Vector3dVector(lane_markings)
-    return lane_cloud
-
-# 4. Dataset para PyTorch
-class LaneDataset(Dataset):
-    def __init__(self, directory, labels):
-        self.files = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.ply')]
-        self.labels = labels  # Lista de rótulos correspondentes aos arquivos
-        self.data = []
-
-        for file in self.files:
-            pcd = o3d.io.read_point_cloud(file)
-            road_cloud = segment_road_with_ransac(pcd)
-            road_cloud, _ = detect_curb_points(road_cloud)
-            lane_cloud = detect_lane_markings(road_cloud)
-            self.data.append(np.asarray(lane_cloud.points))
+    def load_labels(self, labels_file):
+        with open(labels_file, 'r') as f:
+            lines = f.readlines()
+        return {line.split(',')[0]: float(line.split(',')[1]) for line in lines}
 
     def __len__(self):
-        return len(self.data)
+        return len(self.ply_files)
 
     def __getitem__(self, idx):
-        points = self.data[idx]
-        label = self.labels[idx]
-        return torch.tensor(points, dtype=torch.float32).T, torch.tensor(label, dtype=torch.float32)
-
-# 5. PointNet para Regressão
+        ply_file = self.ply_files[idx]
+        file_name = os.path.basename(ply_file)
+        pcd = o3d.io.read_point_cloud(ply_file)
+        points = np.asarray(pcd.points, dtype=np.float32)
+        label = self.labels[file_name]
+        return torch.tensor(points, dtype=torch.float32), torch.tensor(label, dtype=torch.float32)
+    
 class PointNet(nn.Module):
     def __init__(self):
         super(PointNet, self).__init__()
         self.conv1 = nn.Conv1d(3, 64, 1)
         self.conv2 = nn.Conv1d(64, 128, 1)
-        self.conv3 = nn.Conv1d(128, 256, 1)
-        self.fc1 = nn.Linear(256, 512)
-        self.fc2 = nn.Linear(512, 1)
+        self.conv3 = nn.Conv1d(128, 1024, 1)
+        self.fc1 = nn.Linear(1024, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, 1)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(p=0.3)
 
     def forward(self, x):
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = torch.relu(self.conv3(x))
-        x = torch.max(x, 2)[0]  # Pooling máximo
-        x = torch.relu(self.fc1(x))
-        x = self.fc2(x)
+        x = x.permute(0, 2, 1)  # (B, N, C) -> (B, C, N)
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        x = self.relu(self.conv3(x))
+        x = torch.max(x, 2)[0]  # Global max pooling
+        x = self.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.relu(self.fc2(x))
+        x = self.fc3(x)
         return x
 
-# 6. Treinamento Supervisionado
-def train_pointnet(directory, labels, num_epochs=10, batch_size=4, learning_rate=0.001):
-    dataset = LaneDataset(directory, labels)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+def train_model(train_loader, model, epochs=10, lr=0.001, save_path="pointnet_model.pth"):
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    model = PointNet()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    loss_fn = nn.MSELoss()
-
-    for epoch in range(num_epochs):
-        total_loss = 0
-        for points, label in dataloader:
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0.0
+        for points, label in train_loader:
             optimizer.zero_grad()
-
-            if points.size(2) == 0:
-                print("Aviso: Batch vazio ignorado.")
-                continue
-
-            points = points.transpose(1, 2)  # Formato [Batch, 3, N]
-            outputs = model(points).squeeze()  # Saída do modelo
-            loss = loss_fn(outputs, label)  # Comparar saída com rótulo
+            output = model(points)
+            loss = criterion(output.squeeze(), label)
             loss.backward()
             optimizer.step()
-            total_loss += loss.item()
+            epoch_loss += loss.item()
+        print(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss / len(train_loader):.4f}")
 
-        print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {total_loss / len(dataloader)}")
+    torch.save(model.state_dict(), save_path)
+    print(f"Modelo salvo em: {save_path}")
 
-    torch.save(model.state_dict(), "pointnet_model.pth")
-    print("Modelo salvo como pointnet_model.pth")
-
-# 7. Predição Supervisionada e Visualização
-def predict_and_visualize(model_path, ply_file):
-    model = PointNet()
-    model.load_state_dict(torch.load(model_path))
+def test_model(test_loader, model, load_path="pointnet_model.pth"):
+    model.load_state_dict(torch.load(load_path))
     model.eval()
-
-    pcd = o3d.io.read_point_cloud(ply_file)
-    road_cloud = segment_road_with_ransac(pcd)
-    road_cloud, _ = detect_curb_points(road_cloud)
-    lane_cloud = detect_lane_markings(road_cloud)
-
-    points = np.asarray(lane_cloud.points)
-    if points.size == 0:
-        print("Aviso: Nenhuma marcação de faixa detectada na nuvem de pontos.")
-        return
-
-    points_tensor = torch.tensor(points, dtype=torch.float32).T.unsqueeze(0)  # Formato [1, 3, N]
-
-    if points_tensor.size(2) == 0:
-        print("Aviso: Nenhum ponto válido para predição.")
-        return
-
+    predictions, labels = [], []
     with torch.no_grad():
-        prediction = model(points_tensor).item()
-    print(f"Predição do modelo: {prediction}")
-
-    o3d.visualization.draw_geometries([lane_cloud])
-
+        for points, label in test_loader:
+            prediction = model(points).item()
+            predictions.append(prediction)
+            labels.append(label.item())
+    return predictions, labels
 
 def main():
+    # Diretórios
     script_path = os.path.dirname(os.path.abspath(__file__))
-    data_path = os.path.join(script_path, "../data/pointclouds")
-    labels = []
-    print(data_path, labels)
-    train_pointnet(data_path, num_epochs=1)
+    data_path = os.path.join(script_path, "../data")
+    train_dir = data_path+"/pointclouds/ROI"
+    test_dir = data_path+"/pointclouds/ROI"
+    labels_train = "caminho/para/labels_treino.csv"  # Arquivo no formato: "arquivo.ply,distância"
+    labels_test = "caminho/para/labels_teste.csv"
+    x_limits = (-5, 5)  # Largura lateral
+    y_limits = (0, 30)  # Profundidade frontal
 
-    # Exemplo de uso para predição e visualização
-    ply_file = data_path + "/1682191700.ply"
-    predict_and_visualize("pointnet_model.pth", ply_file)
+    # Carregar datasets
+    train_dataset = PointCloudDataset(train_dir, labels_train, x_limits, y_limits)
+    test_dataset = PointCloudDataset(test_dir, labels_test, x_limits, y_limits)
+
+    # Configurar DataLoaders
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+
+    # Modelo
+    model = PointNet()
+
+    # Treinar o modelo
+    train_model(train_loader, model, epochs=10, save_path="lane_detection_model.pth")
+
+    # Testar o modelo
+    predictions, labels = test_model(test_loader, model, load_path="lane_detection_model.pth")
+
+    # Visualizar resultados
+    plt.plot(labels, predictions, 'o', label="Predições")
+    plt.plot(labels, labels, 'r', label="Ideal")
+    plt.xlabel("Rótulos Reais")
+    plt.ylabel("Predições")
+    plt.legend()
+    plt.show()
 
 if __name__ == "__main__":
     main()

@@ -162,13 +162,60 @@ def savePointCloudToPLY(points, output_path):
     o3d.io.write_point_cloud(output_path, pcd)
     print(f"Arquivo salvo em: {output_path}")
 
+def extractROIFromFolder(input_dir, output_dir, x_range, y_range, z_range):
+    """
+    Extrai a ROI de todas as nuvens de pontos .ply em um diretório e salva em um novo diretório.
+
+    Args:
+        input_dir (str): Caminho do diretório contendo os arquivos .ply.
+        output_dir (str): Caminho do diretório onde as ROIs serão salvas.
+        x_range (tuple): Limite do eixo X (min, max) para a ROI.
+        y_range (tuple): Limite do eixo Y (min, max) para a ROI.
+        z_range (tuple): Limite do eixo Z (min, max) para a ROI.
+    """
+    # Garantir que o diretório de saída existe
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Listar todos os arquivos .ply no diretório de entrada
+    ply_files = [f for f in os.listdir(input_dir) if f.endswith('.ply')]
+
+    for ply_file in ply_files:
+        # Caminho completo do arquivo
+        input_path = os.path.join(input_dir, ply_file)
+        output_path = os.path.join(output_dir, ply_file)
+
+        # Carregar a nuvem de pontos
+        pcd = o3d.io.read_point_cloud(input_path)
+        points = np.asarray(pcd.points)
+
+        # Filtrar pontos dentro da ROI
+        mask = (points[:, 0] > x_range[0]) & (points[:, 0] < x_range[1]) & \
+               (points[:, 1] > y_range[0]) & (points[:, 1] < y_range[1]) & \
+               (points[:, 2] > z_range[0]) & (points[:, 2] < z_range[1])
+        roi_points = points[mask]
+
+        # Criar uma nova nuvem de pontos para a ROI
+        roi_pcd = o3d.geometry.PointCloud()
+        roi_pcd.points = o3d.utility.Vector3dVector(roi_points)
+
+        # Salvar a ROI em um novo arquivo .ply
+        o3d.io.write_point_cloud(output_path, roi_pcd)
+
 def main():
     script_path = os.path.dirname(os.path.abspath(__file__))
     data_path = os.path.join(script_path, "../data")
     #print(data_path)
+    if not os.path.exists(data_path+"/pointclouds"):
+        os.makedirs(data_path+"/pointclouds")
 
     #readLidarFolder(data_path, data_path+"/pointclouds")
-    point_cloud = o3d.io.read_point_cloud(data_path+"/pointclouds/1682191900.ply")
+    x_limits = (-100, 100)   # Limites do eixo X em metros
+    y_limits = (-30, 30)   # Limites do eixo Y em metros
+    z_limits = (-4, 0)   # Limites do eixo Z em metros
+    if not os.path.exists(data_path+"/pointclouds/ROI"):
+        os.makedirs(data_path+"/pointclouds/ROI")
+    extractROIFromFolder(data_path+"/pointclouds", data_path+"/pointclouds/ROI", x_limits, y_limits, z_limits)
+    point_cloud = o3d.io.read_point_cloud(data_path+"/pointclouds/ROI/1682191800.ply")
     o3d.visualization.draw_geometries([point_cloud])
 
 if __name__ == "__main__":
