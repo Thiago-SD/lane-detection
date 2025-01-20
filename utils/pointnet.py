@@ -104,11 +104,14 @@ def main():
     # Modelo
     model = PointNet()
 
+    if not os.path.exists(script_path+"/model"):
+        os.makedirs(script_path+"/model")
+
     # Treinar o modelo
-    train_model(train_loader, model, epochs=10, save_path="lane_detection_model.pth")
+    train_model(train_loader, model, epochs=10, save_path="/model/lane_detection_model.pth")
 
     # Testar o modelo
-    predictions, labels = test_model(test_loader, model, load_path="lane_detection_model.pth")
+    predictions, labels = test_model(test_loader, model, load_path="/model/lane_detection_model.pth")
 
     # Visualizar resultados
     plt.plot(labels, predictions, 'o', label="Predições")
