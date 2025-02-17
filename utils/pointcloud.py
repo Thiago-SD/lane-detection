@@ -1,7 +1,5 @@
 import os
 import numpy as np
-import pandas as pd
-import csv
 import math
 
 # Ângulos verticais do Velodyne
@@ -15,21 +13,101 @@ velodyne_vertical_angles = np.array([
 # Ordem dos raios do Velodyne
 velodyne_ray_order = np.array([0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31])
 
-# Função para ler o arquivo .pointcloud
-def readLidarFile(file_path):
-    try:
-        with open(file_path, 'rb') as f:
-            data = f.read()
-        return data
-    except Exception as e:
-        print(f"Erro ao ler o arquivo {file_path}: {e}")
-        return None
+# Constantes
+N_RAYS = 1084  # Número fixo de raios por nuvem de pontos
 
-# Função para converter dados binários em pontos 3D
-def binaryTo3d(file_path, n_rays):
-    # Verificar se n_rays é um número inteiro válido
-    if not isinstance(n_rays, int) or n_rays <= 0:
-        raise ValueError(f"n_rays deve ser um número inteiro positivo. Recebido: {n_rays}")
+# Classe para manter o estado do robô (posição e orientação)
+class RobotState:
+    def __init__(self):
+        self.x = 0.0  # Posição global X
+        self.y = 0.0  # Posição global Y
+        self.theta = 0.0  # Orientação (em radianos)
+        self.last_timestamp = None  # Último timestamp processado
+
+    def update(self, v, phi, timestamp):
+        """
+        Atualiza a posição e orientação do robô com base na velocidade linear (v) e angular (phi).
+        :param v: Velocidade linear (m/s)
+        :param phi: Velocidade angular (rad/s)
+        :param timestamp: Timestamp atual (segundos)
+        """
+        if self.last_timestamp is not None:
+            # Calcular o tempo decorrido desde a última atualização
+            dt = timestamp - self.last_timestamp
+
+            # Atualizar a orientação (theta)
+            self.theta += phi * dt
+
+            # Atualizar a posição (x, y)
+            self.x += v * math.cos(self.theta) * dt
+            self.y += v * math.sin(self.theta) * dt
+
+        # Atualizar o último timestamp
+        self.last_timestamp = timestamp
+
+    def get_position(self):
+        """
+        Retorna a posição e orientação atual do robô.
+        :return: (x, y, theta)
+        """
+        return self.x, self.y, self.theta
+
+# Função para encontrar a mensagem mais próxima no tempo
+def find_near(s, queue, key):
+    near = 0
+    for i in range(1, len(queue[key])):
+        dti = abs(float(queue[key][i][0]) - float(s[-1]))  # Comparar timestamps
+        dtn = abs(float(queue[key][near][0]) - float(s[-1]))
+        if dti < dtn:
+            near = i
+    return near
+
+# Função para adicionar dados à fila
+def add_to_queue(queue, key, data):
+    if key not in queue:
+        queue[key] = []
+    queue[key].append(data)
+
+# Função para parsear o arquivo de log
+def parse_log_file(log_file_path):
+    if not os.path.exists(log_file_path):
+        raise FileNotFoundError(f"Arquivo de log não encontrado: {log_file_path}")
+
+    queue = {
+        'velodyne': [],  # Nuvens de pontos
+        'odom': [],      # Odometria (ROBOTVELOCITY_ACK)
+    }
+
+    robot_state = RobotState()  # Inicializar o estado do robô
+
+    with open(log_file_path, 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) < 2:
+                continue
+
+            if parts[0] == "VELODYNE_PARTIAL_SCAN_IN_FILE":
+                add_to_queue(queue, 'velodyne', parts)
+            elif parts[0] == "ROBOTVELOCITY_ACK":
+                try:
+                    v = float(parts[1])  # Velocidade linear (m/s)
+                    phi = float(parts[2])  # Velocidade angular (rad/s)
+                    timestamp = float(parts[3])  # Timestamp
+                    robot_state.update(v, phi, timestamp)
+                    #print(robot_state.get_position())
+                    add_to_queue(queue, 'odom', [timestamp, *robot_state.get_position()])
+                except (IndexError, ValueError) as e:
+                    print(f"Erro ao processar mensagem de odometria: {line}. Detalhes: {e}")
+                    continue
+
+    return queue
+
+def binaryTo3d(file_path):
+    # Verificar se o arquivo existe e não está vazio
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Arquivo não encontrado: {file_path}")
+    if os.path.getsize(file_path) == 0:
+        raise ValueError(f"Arquivo vazio: {file_path}")
 
     # Tamanho dos tipos de dados
     size_double = np.dtype(np.float64).itemsize  # 8 bytes
@@ -39,158 +117,124 @@ def binaryTo3d(file_path, n_rays):
     # Tamanho de cada registro (disparo)
     record_size = size_double + (32 * size_short) + (32 * size_char)
 
-    # Verificar se o tamanho do arquivo é consistente com n_rays
+    # Verificar o tamanho do arquivo
     file_size = os.path.getsize(file_path)
-    expected_size = n_rays * record_size
+    expected_size = N_RAYS * record_size
+
+    # Se o arquivo for menor que o esperado, ajustar o número de raios
     if file_size < expected_size:
-        raise ValueError(f"Arquivo corrompido ou incompleto: tamanho esperado {expected_size}, tamanho real {file_size}")
+        actual_rays = file_size // record_size
+        print(f"Aviso: Arquivo {file_path} tem tamanho inesperado. Processando {actual_rays} raios em vez de {N_RAYS}.")
+    else:
+        actual_rays = N_RAYS
 
     # Inicializar array para armazenar os pontos 3D
-    points = np.empty((n_rays * 32, 3), dtype=np.float32)  # (N, 3) onde N = n_rays * 32
+    points = np.empty((actual_rays * 32, 3), dtype=np.float32)  # (N, 3) onde N = actual_rays * 32
 
-    # Ler o arquivo binário e processar os dados em blocos
-    with open(file_path, 'rb') as f:
-        for i in range(n_rays):
-            # Ler o ângulo (double, 8 bytes)
-            angle = np.frombuffer(f.read(size_double), dtype=np.float64)[0]
+    try:
+        with open(file_path, 'rb') as f:
+            for i in range(actual_rays):
+                # Ler o ângulo (double, 8 bytes)
+                angle_data = f.read(size_double)
+                if len(angle_data) != size_double:
+                    print(f"Aviso: Erro ao ler o ângulo no disparo {i}. Pulando este disparo.")
+                    continue
+                angle = np.frombuffer(angle_data, dtype=np.float64)[0]
 
-            # Ler as distâncias (32 * short, 2 bytes cada)
-            distances = np.frombuffer(f.read(32 * size_short), dtype=np.int16)
+                # Ler as distâncias (32 * short, 2 bytes cada)
+                distances_data = f.read(32 * size_short)
+                if len(distances_data) != 32 * size_short:
+                    print(f"Aviso: Erro ao ler distâncias no disparo {i}. Pulando este disparo.")
+                    continue
+                distances = np.frombuffer(distances_data, dtype=np.int16)
 
-            # Ler as intensidades (32 * char, 1 byte cada)
-            intensities = np.frombuffer(f.read(32 * size_char), dtype=np.uint8)
+                # Ler as intensidades (32 * char, 1 byte cada)
+                intensities_data = f.read(32 * size_char)
+                if len(intensities_data) != 32 * size_char:
+                    print(f"Aviso: Erro ao ler intensidades no disparo {i}. Pulando este disparo.")
+                    continue
+                intensities = np.frombuffer(intensities_data, dtype=np.uint8)
 
-            # Converter o ângulo para radianos
-            h_angle = np.pi * angle / 180.0
+                # Converter o ângulo para radianos
+                h_angle = np.pi * angle / 180.0
 
-            # Processar cada ponto do disparo
-            for j in range(32):
-                l_range = distances[j] / 500.0  # Normalizar distância
-                v_angle = velodyne_vertical_angles[j]
-                v_angle = np.pi * v_angle / 180.0  # Converter ângulo vertical para radianos
+                # Processar cada ponto do disparo
+                for j in range(32):
+                    l_range = distances[j] / 500.0  # Normalizar distância
+                    v_angle = velodyne_vertical_angles[j]
+                    v_angle = np.pi * v_angle / 180.0  # Converter ângulo vertical para radianos
 
-                # Calcular as coordenadas x, y, z
-                cos_rot_angle = np.cos(h_angle)
-                sin_rot_angle = np.sin(h_angle)
-                cos_vert_angle = np.cos(v_angle)
-                sin_vert_angle = np.sin(v_angle)
+                    # Calcular as coordenadas x, y, z
+                    cos_rot_angle = np.cos(h_angle)
+                    sin_rot_angle = np.sin(h_angle)
+                    cos_vert_angle = np.cos(v_angle)
+                    sin_vert_angle = np.sin(v_angle)
 
-                xy_distance = l_range * cos_vert_angle
-                x = xy_distance * cos_rot_angle
-                y = xy_distance * sin_rot_angle
-                z = l_range * sin_vert_angle
+                    xy_distance = l_range * cos_vert_angle
+                    x = xy_distance * cos_rot_angle
+                    y = xy_distance * sin_rot_angle
+                    z = l_range * sin_vert_angle
 
-                # Armazenar o ponto no array
-                points[i * 32 + j, 0] = x
-                points[i * 32 + j, 1] = y
-                points[i * 32 + j, 2] = z
+                    # Armazenar o ponto no array
+                    points[i * 32 + j, 0] = x
+                    points[i * 32 + j, 1] = y
+                    points[i * 32 + j, 2] = z
+
+    except Exception as e:
+        print(f"Erro ao processar o arquivo {file_path}: {e}")
+        return None
+
     return points
 
-# Função para converter graus e minutos para graus decimais
-def convert_degmin_to_decimal(degmin):
-    degrees = int(degmin // 100)
-    minutes = degmin - (degrees * 100)
-    return degrees + (minutes / 60)
-
-# Função para converter coordenadas geodésicas (lat, lon) para UTM
-def geodetic_to_utm(lat, lon):
-    k0 = 0.9996
-    a = 6378137.0
-    f = 1 / 298.257223563
-    b = a * (1 - f)
-
-    lat_rad = math.radians(lat)
-    lon_rad = math.radians(lon)
-
-    e = math.sqrt(1 - (b / a) ** 2)
-    n = (a - b) / (a + b)
-    nu = a / math.sqrt(1 - (e * math.sin(lat_rad)) ** 2)
-    p = lon_rad - math.floor((lon_rad + math.pi) / (2 * math.pi)) * (2 * math.pi)
-
-    A = a * (1 - n + (5 / 4) * (n ** 2 - n ** 3) + (81 / 64) * (n ** 4 - n ** 5))
-    B = (3 / 2) * a * (n - n ** 2 + (7 / 8) * (n ** 3 - n ** 4) + (55 / 64) * n ** 5)
-    C = (15 / 16) * a * (n ** 2 - n ** 3 + (3 / 4) * (n ** 4 - n ** 5))
-    D = (35 / 48) * a * (n ** 3 - n ** 4 + (11 / 16) * n ** 5)
-    E = (315 / 512) * a * (n ** 4 - n ** 5)
-
-    S = A * lat_rad - B * math.sin(2 * lat_rad) + C * math.sin(4 * lat_rad) - D * math.sin(6 * lat_rad) + E * math.sin(8 * lat_rad)
-    K1 = S * k0
-    K2 = nu * math.sin(lat_rad) * math.cos(lat_rad) * k0 / 2
-    K3 = (nu * math.sin(lat_rad) * math.cos(lat_rad) ** 3 * k0 / 24) * (5 - math.tan(lat_rad) ** 2 + 9 * e ** 2 * math.cos(lat_rad) ** 2 + 4 * e ** 4 * math.cos(lat_rad) ** 4)
-    K4 = nu * math.cos(lat_rad) * k0
-    K5 = (nu * math.cos(lat_rad) ** 3 * k0 / 6) * (1 - math.tan(lat_rad) ** 2 + e ** 2 * math.cos(lat_rad) ** 2)
-
-    x = K1 + K2 * p ** 2 + K3 * p ** 4
-    y = K4 * p + K5 * p ** 3 + 500000
-
-    return x, y
-
-# Função para ler a mensagem NMEAGGA e converter para UTM
-def read_gps(line, gps_to_use=1):
-    parts = line.strip().split()
-    if len(parts) < 15 or parts[0] != "NMEAGGA":
-        return None
-
-    gps_id = int(parts[1])
-    if gps_id != gps_to_use:
-        return None
-
-    lat_dm = float(parts[3])
-    lat_orientation = parts[4]
-    lon_dm = float(parts[5])
-    lon_orientation = parts[6]
-    altitude = float(parts[11])
-    logger_timestamp = float(parts[-1])
-
-    # Converter latitude e longitude para graus decimais
-    lat = convert_degmin_to_decimal(lat_dm)
-    lon = convert_degmin_to_decimal(lon_dm)
-
-    if lat_orientation == 'S':
-        lat = -lat
-    if lon_orientation == 'W':
-        lon = -lon
-
-    # Converter para UTM
-    x, y = geodetic_to_utm(lat, lon)
-
-    return x, y, altitude, logger_timestamp
-
-# Função para parsear o arquivo de log
-def parse_log_file(log_file_path):
-    if not os.path.exists(log_file_path):
-        raise FileNotFoundError(f"Arquivo de log não encontrado: {log_file_path}")
-
-    pointcloud_files = []
-    global_positions = []
-
-    with open(log_file_path, 'r') as f:
-        for line in f:
-            if line.startswith("VELODYNE_PARTIAL_SCAN_IN_FILE"):
-                parts = line.strip().split()
-                relative_path = parts[1]
-                n_rays = int(parts[2])  # Extrair n_rays da linha do log
-                logger_timestamp = float(parts[-1])
-                pointcloud_files.append((logger_timestamp, relative_path, n_rays))
-
-            elif line.startswith("NMEAGGA"):
-                gps_data = read_gps(line)
-                if gps_data is not None:
-                    x, y, z, timestamp = gps_data
-                    global_positions.append((timestamp, x, y, z))
-
-    return pointcloud_files, global_positions
-
 # Função para associar nuvens de pontos a posições globais
-def associate_pointclouds_with_positions(pointcloud_files, global_positions):
+def associate_pointclouds_with_positions(queue):
     dataset = []
 
-    for pc_timestamp, pc_file, n_rays in pointcloud_files:
-        # Encontrar a posição global mais próxima no tempo
-        closest_position = min(global_positions, key=lambda x: abs(x[0] - pc_timestamp))
-        dataset.append((pc_file, n_rays, closest_position))
+    for velodyne_data in queue['velodyne']:
+        velodyne_timestamp = float(velodyne_data[-1])
+
+        # Encontrar a mensagem de odometria mais próxima no tempo
+        nearest_odom_index = find_near(velodyne_data, queue, 'odom')
+        nearest_odom = queue['odom'][nearest_odom_index]
+
+        # Extrair a posição global
+        timestamp, x, y, theta = nearest_odom
+
+        # Adicionar ao dataset
+        dataset.append((velodyne_data[1], (timestamp, x, y, theta)))
 
     return dataset
+
+def print_dataset_structure(dataset_path):
+    """
+    Carrega o dataset numpy e imprime o formato dos vetores armazenados.
+    :param dataset_path: Caminho para o arquivo .npy
+    """
+    try:
+        # Carregar o dataset
+        dataset = np.load(dataset_path, allow_pickle=True)
+
+        # Verificar se o dataset foi carregado corretamente
+        if not isinstance(dataset, np.ndarray):
+            print(f"Erro: O arquivo {dataset_path} não contém um array numpy válido.")
+            return
+
+        # Imprimir o número de entradas no dataset
+        print(f"O dataset contém {len(dataset)} entradas.")
+
+        # Iterar sobre as entradas do dataset
+        for i, entry in enumerate(dataset):
+            print(f"\nEntrada {i + 1}:")
+            print(f"  - Timestamp: {entry['timestamp']}")
+            print(f"  - Posição global (x, y, theta): ({entry['x']}, {entry['y']}, {entry['theta']})")
+            print(f"  - Nuvem de pontos (pointcloud):")
+            print(f"    - Formato: {entry['pointcloud'].shape}")
+            print(f"    - Tipo de dados: {entry['pointcloud'].dtype}")
+            print(f"    - Primeiros 5 pontos:")
+            print(entry['pointcloud'][:5])  # Imprimir os primeiros 5 pontos
+
+    except Exception as e:
+        print(f"Erro ao carregar ou processar o arquivo {dataset_path}: {e}")
 
 def main():
     # Obter o caminho absoluto do diretório do script
@@ -216,58 +260,53 @@ def main():
                 # Caminho para o diretório de nuvens de pontos (log_volta_da_ufes_20230422.txt_lidar)
                 pointcloud_dir = os.path.join(root, f"{root_dir_name}.txt_lidar")
                 # Caminho para o diretório de saída
-                output_dir = os.path.join(root, "output")
+                output_dir = os.path.join(data_path, "output")
                 # Verificar se o diretório de saída existe
                 os.makedirs(output_dir, exist_ok=True)
 
-                # Caminho para o arquivo .csv de saída
-                dataset_output_path = os.path.join(output_dir, f"{root_dir_name}.csv")
+                # Caminho para o arquivo .npy de saída
+                dataset_output_path = os.path.join(output_dir, f"{root_dir_name}.npy")
 
                 try:
                     # Parsear o arquivo de log
-                    pointcloud_files, global_positions = parse_log_file(log_file_path)
+                    queue = parse_log_file(log_file_path)
 
                     # Associar nuvens de pontos a posições globais
-                    dataset = associate_pointclouds_with_positions(pointcloud_files, global_positions)
+                    dataset = associate_pointclouds_with_positions(queue)
 
-                    # Abrir o arquivo .csv para escrita
-                    with open(dataset_output_path, 'w', newline='') as csvfile:
-                        # Definir as colunas do arquivo .csv
-                        fieldnames = ["timestamp", "latitude", "longitude", "altitude", "pointcloud"]
-                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    # Preparar o dataset numpy
+                    dataset_np = []
 
-                        # Escrever o cabeçalho do arquivo .csv
-                        writer.writeheader()
+                    # Processar cada nuvem de pontos
+                    for pc_file, position in dataset:
+                        # Remover o segmento "/_lidar/" do caminho relativo, se presente
+                        if pc_file.startswith("_lidar/"):
+                            pc_file = pc_file[len("_lidar/"):]
 
-                        # Processar cada nuvem de pontos
-                        for pc_file, n_rays, position in dataset:
-                            pc_timestamp, latitude, longitude, altitude = position
+                        # Construir o caminho completo do arquivo .pointcloud
+                        pc_path = os.path.join(pointcloud_dir, pc_file)
 
-                            # Remover o segmento "/_lidar/" do caminho relativo, se presente
-                            if pc_file.startswith("_lidar/"):
-                                pc_file = pc_file[len("_lidar/"):]
+                        # Verificar se o arquivo .pointcloud existe
+                        if not os.path.exists(pc_path):
+                            print(f"Arquivo .pointcloud não encontrado: {pc_path}")
+                            continue
 
-                            # Construir o caminho completo do arquivo .pointcloud
-                            pc_path = os.path.join(pointcloud_dir, pc_file)
+                        # Converter dados binários em pontos 3D
+                        points = binaryTo3d(pc_path)
 
-                            # Verificar se o arquivo .pointcloud existe
-                            if not os.path.exists(pc_path):
-                                print(f"Arquivo .pointcloud não encontrado: {pc_path}")
-                                continue
+                        # Adicionar ao dataset numpy
+                        dataset_np.append({
+                            "timestamp": position[0],
+                            "x": position[1],
+                            "y": position[2],
+                            "theta": position[3],
+                            "pointcloud": points
+                        })
 
-                            # Converter dados binários em pontos 3D
-                            points = binaryTo3d(pc_path, n_rays)
-
-                            # Escrever os dados no arquivo .csv
-                            writer.writerow({
-                                "timestamp": pc_timestamp,
-                                "latitude": latitude,
-                                "longitude": longitude,
-                                "altitude": altitude,
-                                "pointcloud": points.tolist()  # Converter array numpy para lista
-                            })
-
+                    # Salvar o dataset numpy
+                    np.save(dataset_output_path, dataset_np)
                     print(f"Dataset salvo em {dataset_output_path}")
+                    print_dataset_structure(dataset_output_path)
 
                 except FileNotFoundError as e:
                     print(f"Erro: {e}")
