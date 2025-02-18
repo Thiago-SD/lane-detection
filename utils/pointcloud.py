@@ -53,13 +53,24 @@ class RobotState:
         return self.x, self.y, self.theta
 
 # Função para encontrar a mensagem mais próxima no tempo
-def find_near(s, queue, key):
+def find_near(target_timestamp, queue, key):
+    """
+    Encontra a mensagem mais próxima no tempo para um determinado timestamp.
+    :param target_timestamp: Timestamp de referência.
+    :param queue: Fila de mensagens.
+    :param key: Chave da fila (ex: 'odom').
+    :return: Índice da mensagem mais próxima.
+    """
     near = 0
-    for i in range(1, len(queue[key])):
-        dti = abs(float(queue[key][i][0]) - float(s[-1]))  # Comparar timestamps
-        dtn = abs(float(queue[key][near][0]) - float(s[-1]))
-        if dti < dtn:
+    min_diff = float('inf')  # Inicializar com um valor grande
+
+    for i in range(len(queue[key])):
+        current_timestamp = queue[key][i][0]  # O timestamp é o primeiro elemento da mensagem
+        diff = abs(current_timestamp - target_timestamp)
+        if diff < min_diff:
+            min_diff = diff
             near = i
+
     return near
 
 # Função para adicionar dados à fila
@@ -94,8 +105,8 @@ def parse_log_file(log_file_path):
                     phi = float(parts[2])  # Velocidade angular (rad/s)
                     timestamp = float(parts[3])  # Timestamp
                     robot_state.update(v, phi, timestamp)
-                    #print(robot_state.get_position())
-                    add_to_queue(queue, 'odom', [timestamp, *robot_state.get_position()])
+                    print(f"Odometria processada: timestamp={timestamp}, x={robot_state.x}, y={robot_state.y}, theta={robot_state.theta}")
+                    add_to_queue(queue, 'odom', [timestamp, robot_state.x, robot_state.y, robot_state.theta])
                 except (IndexError, ValueError) as e:
                     print(f"Erro ao processar mensagem de odometria: {line}. Detalhes: {e}")
                     continue
@@ -191,10 +202,10 @@ def associate_pointclouds_with_positions(queue):
     dataset = []
 
     for velodyne_data in queue['velodyne']:
-        velodyne_timestamp = float(velodyne_data[-1])
+        velodyne_timestamp = float(velodyne_data[-1])  # Timestamp da nuvem de pontos
 
         # Encontrar a mensagem de odometria mais próxima no tempo
-        nearest_odom_index = find_near(velodyne_data, queue, 'odom')
+        nearest_odom_index = find_near(velodyne_timestamp, queue, 'odom')
         nearest_odom = queue['odom'][nearest_odom_index]
 
         # Extrair a posição global
@@ -223,7 +234,7 @@ def print_dataset_structure(dataset_path):
         print(f"O dataset contém {len(dataset)} entradas.")
 
         # Iterar sobre as entradas do dataset
-        for i, entry in enumerate(dataset):
+        for i, entry in enumerate(dataset[:5]):
             print(f"\nEntrada {i + 1}:")
             print(f"  - Timestamp: {entry['timestamp']}")
             print(f"  - Posição global (x, y, theta): ({entry['x']}, {entry['y']}, {entry['theta']})")
