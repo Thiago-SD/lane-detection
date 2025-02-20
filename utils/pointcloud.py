@@ -16,6 +16,14 @@ velodyne_ray_order = np.array([0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26
 # Constantes
 N_RAYS = 1084  # Número fixo de raios por nuvem de pontos
 
+# Constantes para as tags
+GPS_TAG = 'NMEAGGA'
+GPS_ORIENTATION_TAG = 'NMEAHDT'
+ODOM_TAG = 'ROBOTVELOCITY_ACK'
+CAMERA_TAG = 'BUMBLEBEE_BASIC_STEREOIMAGE_IN_FILE3'
+VELODYNE_TAG = 'VELODYNE_PARTIAL_SCAN_IN_FILE'
+XSENS_TAG = 'XSENS_QUAT'
+
 # Classe para manter o estado do robô (posição e orientação)
 class RobotState:
     def __init__(self):
@@ -52,67 +60,7 @@ class RobotState:
         """
         return self.x, self.y, self.theta
 
-# Função para encontrar a mensagem mais próxima no tempo
-def find_near(target_timestamp, queue, key):
-    """
-    Encontra a mensagem mais próxima no tempo para um determinado timestamp.
-    :param target_timestamp: Timestamp de referência.
-    :param queue: Fila de mensagens.
-    :param key: Chave da fila (ex: 'odom').
-    :return: Índice da mensagem mais próxima.
-    """
-    near = 0
-    min_diff = float('inf')  # Inicializar com um valor grande
-
-    for i in range(len(queue[key])):
-        current_timestamp = queue[key][i][0]  # O timestamp é o primeiro elemento da mensagem
-        diff = abs(current_timestamp - target_timestamp)
-        if diff < min_diff:
-            min_diff = diff
-            near = i
-
-    return near
-
-# Função para adicionar dados à fila
-def add_to_queue(queue, key, data):
-    if key not in queue:
-        queue[key] = []
-    queue[key].append(data)
-
-# Função para parsear o arquivo de log
-def parse_log_file(log_file_path):
-    if not os.path.exists(log_file_path):
-        raise FileNotFoundError(f"Arquivo de log não encontrado: {log_file_path}")
-
-    queue = {
-        'velodyne': [],  # Nuvens de pontos
-        'odom': [],      # Odometria (ROBOTVELOCITY_ACK)
-    }
-
-    robot_state = RobotState()  # Inicializar o estado do robô
-
-    with open(log_file_path, 'r') as f:
-        for line in f:
-            parts = line.strip().split()
-            if len(parts) < 2:
-                continue
-
-            if parts[0] == "VELODYNE_PARTIAL_SCAN_IN_FILE":
-                add_to_queue(queue, 'velodyne', parts)
-            elif parts[0] == "ROBOTVELOCITY_ACK":
-                try:
-                    v = float(parts[1])  # Velocidade linear (m/s)
-                    phi = float(parts[2])  # Velocidade angular (rad/s)
-                    timestamp = float(parts[3])  # Timestamp
-                    robot_state.update(v, phi, timestamp)
-                    print(f"Odometria processada: timestamp={timestamp}, x={robot_state.x}, y={robot_state.y}, theta={robot_state.theta}")
-                    add_to_queue(queue, 'odom', [timestamp, robot_state.x, robot_state.y, robot_state.theta])
-                except (IndexError, ValueError) as e:
-                    print(f"Erro ao processar mensagem de odometria: {line}. Detalhes: {e}")
-                    continue
-
-    return queue
-
+# Função para ler e converter dados binários em pontos 3D
 def binaryTo3d(file_path):
     # Verificar se o arquivo existe e não está vazio
     if not os.path.exists(file_path):
@@ -197,24 +145,16 @@ def binaryTo3d(file_path):
 
     return points
 
-# Função para associar nuvens de pontos a posições globais
-def associate_pointclouds_with_positions(queue):
-    dataset = []
-
-    for velodyne_data in queue['velodyne']:
-        velodyne_timestamp = float(velodyne_data[-1])  # Timestamp da nuvem de pontos
-
-        # Encontrar a mensagem de odometria mais próxima no tempo
-        nearest_odom_index = find_near(velodyne_timestamp, queue, 'odom')
-        nearest_odom = queue['odom'][nearest_odom_index]
-
-        # Extrair a posição global
-        timestamp, x, y, theta = nearest_odom
-
-        # Adicionar ao dataset
-        dataset.append((velodyne_data[1], (timestamp, x, y, theta)))
-
-    return dataset
+# Função para encontrar a mensagem mais próxima no tempo
+def find_nearest_timestamp(target_timestamp, timestamps):
+    """
+    Encontra o índice da mensagem mais próxima no tempo para um determinado timestamp.
+    :param target_timestamp: Timestamp de referência.
+    :param timestamps: Array de timestamps.
+    :return: Índice da mensagem mais próxima.
+    """
+    diffs = np.abs(timestamps - target_timestamp)
+    return np.argmin(diffs)
 
 def print_dataset_structure(dataset_path):
     """
@@ -234,7 +174,7 @@ def print_dataset_structure(dataset_path):
         print(f"O dataset contém {len(dataset)} entradas.")
 
         # Iterar sobre as entradas do dataset
-        for i, entry in enumerate(dataset[:5]):
+        for i, entry in enumerate(dataset[0:10]):
             print(f"\nEntrada {i + 1}:")
             print(f"  - Timestamp: {entry['timestamp']}")
             print(f"  - Posição global (x, y, theta): ({entry['x']}, {entry['y']}, {entry['theta']})")
@@ -257,7 +197,7 @@ def main():
     # Verificar se o diretório de dados existe
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"Diretório de dados não encontrado: {data_path}")
-
+    
     # Percorrer todos os subdiretórios em /data
     for root, dirs, files in os.walk(data_path):
         for file in files:
@@ -279,45 +219,135 @@ def main():
                 dataset_output_path = os.path.join(output_dir, f"{root_dir_name}.npy")
 
                 try:
-                    # Parsear o arquivo de log
-                    queue = parse_log_file(log_file_path)
+                    # Inicializar o estado do robô
+                    robot_state = RobotState()
 
-                    # Associar nuvens de pontos a posições globais
-                    dataset = associate_pointclouds_with_positions(queue)
+                    # Inicializar arrays NumPy para armazenar nuvens de pontos e posições globais
+                    pointcloud_timestamps = np.array([], dtype=np.float64)
+                    pointcloud_data = []  # Lista temporária para nuvens de pontos
+                    globalpos_timestamps = np.array([], dtype=np.float64)
+                    globalpos_data = np.array([], dtype=np.dtype([
+                        ('x', np.float64),
+                        ('y', np.float64),
+                        ('theta', np.float64)
+                    ]))  # Array estruturado para armazenar posições globais
 
-                    # Preparar o dataset numpy
+                    # Lista para armazenar o dataset
                     dataset_np = []
 
-                    # Processar cada nuvem de pontos
-                    for pc_file, position in dataset:
-                        # Remover o segmento "/_lidar/" do caminho relativo, se presente
-                        if pc_file.startswith("_lidar/"):
-                            pc_file = pc_file[len("_lidar/"):]
+                    # Abrir o arquivo de log
+                    with open(log_file_path, 'r') as f:
+                        for line in f:
+                            parts = line.strip().split()
+                            if len(parts) < 2 or line.startswith('#'):
+                                # Ignorar linhas malformadas ou comentários
+                                continue
 
-                        # Construir o caminho completo do arquivo .pointcloud
-                        pc_path = os.path.join(pointcloud_dir, pc_file)
+                            elif parts[0] == ODOM_TAG:  # Odometria (ROBOTVELOCITY_ACK)
+                                try:
+                                    # Verificar se a mensagem tem o número correto de partes
+                                    if len(parts) < 4:
+                                        print(f"Mensagem de odometria malformada: {line}")
+                                        continue
 
-                        # Verificar se o arquivo .pointcloud existe
-                        if not os.path.exists(pc_path):
-                            print(f"Arquivo .pointcloud não encontrado: {pc_path}")
-                            continue
+                                    v = float(parts[1])  # Velocidade linear (m/s)
+                                    phi = float(parts[2])  # Velocidade angular (rad/s)
+                                    timestamp = float(parts[-1])  # Timestamp
 
-                        # Converter dados binários em pontos 3D
-                        points = binaryTo3d(pc_path)
+                                    # Atualizar o estado do robô
+                                    robot_state.update(v, phi, timestamp)
 
-                        # Adicionar ao dataset numpy
-                        dataset_np.append({
-                            "timestamp": position[0],
-                            "x": position[1],
-                            "y": position[2],
-                            "theta": position[3],
-                            "pointcloud": points
-                        })
+                                    # Armazenar posição global no array
+                                    globalpos_timestamps = np.append(globalpos_timestamps, timestamp)
+                                    globalpos_data = np.append(globalpos_data, np.array([(robot_state.x, robot_state.y, robot_state.theta)], dtype=np.dtype([
+                                        ('x', np.float64),
+                                        ('y', np.float64),
+                                        ('theta', np.float64)
+                                    ])))
 
-                    # Salvar o dataset numpy
-                    np.save(dataset_output_path, dataset_np)
-                    print(f"Dataset salvo em {dataset_output_path}")
-                    print_dataset_structure(dataset_output_path)
+                                    #print(f"Odometria processada: timestamp={timestamp}, x={robot_state.x}, y={robot_state.y}, theta={robot_state.theta}")
+                                except (IndexError, ValueError) as e:
+                                    print(f"Erro ao processar mensagem de odometria: {line}. Detalhes: {e}")
+                                    continue
+
+                            elif parts[0] == VELODYNE_TAG:  # Nuvens de pontos (VELODYNE_PARTIAL_SCAN_IN_FILE)
+                                try:
+                                    # Verificar se a mensagem tem o número correto de partes
+                                    if len(parts) < 6:
+                                        print(f"Mensagem de nuvem de pontos malformada: {line}")
+                                        continue
+
+                                    # Extrair o caminho do arquivo .pointcloud
+                                    pc_file = parts[1]
+                                    if pc_file.startswith("_lidar/"):
+                                        pc_file = pc_file[len("_lidar/"):]
+
+                                    # Construir o caminho completo do arquivo .pointcloud
+                                    pc_path = os.path.join(pointcloud_dir, pc_file)
+
+                                    # Verificar se o arquivo .pointcloud existe
+                                    if not os.path.exists(pc_path):
+                                        print(f"Arquivo .pointcloud não encontrado: {pc_path}")
+                                        continue
+
+                                    # Converter dados binários em pontos 3D
+                                    points = binaryTo3d(pc_path)
+                                    if points is None:
+                                        print(f"Erro ao converter nuvem de pontos: {pc_path}")
+                                        continue
+
+                                    # Extrair o timestamp da nuvem de pontos
+                                    velodyne_timestamp = float(parts[-1])
+
+                                    # Armazenar nuvem de pontos no array
+                                    pointcloud_timestamps = np.append(pointcloud_timestamps, velodyne_timestamp)
+                                    pointcloud_data.append(points)
+
+                                    #print(f"Nuvem de pontos processada: timestamp={velodyne_timestamp}, arquivo={pc_path}")
+                                except (IndexError, ValueError) as e:
+                                    print(f"Erro ao processar mensagem de nuvem de pontos: {line}. Detalhes: {e}")
+                                    continue
+                    # Verificar se há dados válidos em globalpos_data e pointcloud_data
+                    if len(globalpos_data) == 0 or len(pointcloud_data) == 0:
+                        print("Erro: globalpos_data ou pointcloud_data estão vazios.")
+                    else:
+                        # Associar nuvens de pontos a posições globais
+                        print("Associar nuvens de pontos a posições globais")
+                        for i, pc_timestamp in enumerate(pointcloud_timestamps):
+                            try:
+                                # Encontrar a posição global mais próxima no tempo
+                                nearest_index = find_nearest_timestamp(pc_timestamp, globalpos_timestamps)
+                                
+                                # Verificar se nearest_index é válido
+                                if nearest_index < 0 or nearest_index >= len(globalpos_data):
+                                    print(f"Índice inválido para globalpos_data: {nearest_index}")
+                                    continue
+
+                                # Acessar a posição global mais próxima
+                                nearest_position = globalpos_data[nearest_index]
+                                #print(nearest_position)
+
+                                # Verificar se nearest_position é um array estruturado
+                                if not isinstance(nearest_position, np.void):
+                                    print(f"Erro: nearest_position não é um array estruturado: {nearest_position}")
+                                    continue
+
+                                # Adicionar ao dataset numpy
+                                dataset_np.append({
+                                    "timestamp": pc_timestamp,
+                                    "x": nearest_position['x'],
+                                    "y": nearest_position['y'],
+                                    "theta": nearest_position['theta'],
+                                    "pointcloud": pointcloud_data[i]
+                                })
+                            except Exception as e:
+                                print(f"Erro ao associar nuvem de pontos a posição global: {e}")
+                                continue
+
+                        # Salvar o dataset numpy
+                        np.save(dataset_output_path, dataset_np)
+                        print(f"Dataset salvo em {dataset_output_path}")
+                        print_dataset_structure(dataset_output_path)
 
                 except FileNotFoundError as e:
                     print(f"Erro: {e}")
