@@ -174,7 +174,7 @@ def print_dataset_structure(dataset_path):
         print(f"O dataset contém {len(dataset)} entradas.")
 
         # Iterar sobre as entradas do dataset
-        for i, entry in enumerate(dataset[0:10]):
+        for i, entry in enumerate(dataset):
             print(f"\nEntrada {i + 1}:")
             print(f"  - Timestamp: {entry['timestamp']}")
             print(f"  - Posição global (x, y, theta): ({entry['x']}, {entry['y']}, {entry['theta']})")
