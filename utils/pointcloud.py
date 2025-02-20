@@ -312,7 +312,6 @@ def main():
                         print("Erro: globalpos_data ou pointcloud_data estão vazios.")
                     else:
                         # Associar nuvens de pontos a posições globais
-                        print("Associar nuvens de pontos a posições globais")
                         for i, pc_timestamp in enumerate(pointcloud_timestamps):
                             try:
                                 # Encontrar a posição global mais próxima no tempo
