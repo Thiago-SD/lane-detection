@@ -188,130 +188,149 @@ def main():
     # Obter o caminho absoluto do diretório do script
     script_path = os.path.dirname(os.path.abspath(__file__))
 
-    # Caminho para o diretório de dados
-    data_path = os.path.abspath(os.path.join(script_path, "..", "data"))
+    # Caminho para o diretório de dados de entrada
+    input_path = os.path.abspath(os.path.join(script_path, "..", "data", "input"))
 
-    # Verificar se o diretório de dados existe
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"Diretório de dados não encontrado: {data_path}")
+    # Verificar se o diretório de entrada existe
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Diretório de entrada não encontrado: {input_path}")
     
-    # Percorrer todos os subdiretórios em /data
-    for root, dirs, files in os.walk(data_path):
-        for file in files:
-            # Verificar se o arquivo é um log relevante (por exemplo, log_volta_da_ufes_*.txt)
-            if file.startswith("log_volta_da_ufes_") and file.endswith(".txt"):
-                log_file_path = os.path.join(root, file)
-                print(f"Processando arquivo de log: {log_file_path}")
+    # Listar diretórios no primeiro nível de /input
+    try:
+        dirs = [d for d in os.listdir(input_path) if os.path.isdir(os.path.join(input_path, d))]
+    except Exception as e:
+        print(f"Erro ao listar diretórios em {input_path}: {e}")
+        return
 
-                # Extrair o nome do diretório raiz (ex: log_volta_da_ufes_20230422)
-                root_dir_name = os.path.basename(root)
-                # Caminho para o diretório de nuvens de pontos (log_volta_da_ufes_20230422.txt_lidar)
-                pointcloud_dir = os.path.join(root, f"{root_dir_name}.txt_lidar")
-                # Caminho para o arquivo de posição global
-                globalpos_file_path = os.path.join(root, f"globalpos_{root_dir_name}.txt")
-                # Caminho para o diretório de saída
-                output_dir = os.path.join(data_path, "output")
-                # Verificar se o diretório de saída existe
-                os.makedirs(output_dir, exist_ok=True)
+    # Procurar pelo primeiro diretório de log
+    for dir_name in dirs:
+        if dir_name.startswith("log_volta_da_ufes_"):
+            log_dir_path = os.path.join(input_path, dir_name)
+            print(f"Processando diretório de log: {log_dir_path}")
 
-                # Caminho para o arquivo .npy de saída
-                dataset_output_path = os.path.join(output_dir, f"{root_dir_name}.npy")
+            # Caminho para o arquivo de log
+            log_file_path = os.path.join(log_dir_path, f"{dir_name}.txt")
+            if not os.path.exists(log_file_path):
+                print(f"Arquivo de log não encontrado: {log_file_path}")
+                continue
 
-                try:
-                    # Ler o arquivo de posição global
-                    globalpos_data = read_globalpos_file(globalpos_file_path)
-                    if len(globalpos_data) == 0:
-                        print(f"Erro: Nenhum dado de posição global encontrado no arquivo {globalpos_file_path}.")
-                        continue
+            # Caminho para o arquivo de posição global correspondente
+            globalpos_file_path = os.path.join(input_path, f"globalpos_{dir_name}.txt")
+            if not os.path.exists(globalpos_file_path):
+                print(f"Arquivo de posição global não encontrado: {globalpos_file_path}")
+                continue
 
-                    # Arrays NumPy para armazenar nuvens de pontos
-                    pointcloud_timestamps = np.array([], dtype=np.float64)
-                    pointcloud_data = []  # Lista temporária para nuvens de pontos
+            # Caminho para o diretório de nuvens de pontos
+            pointcloud_dir = os.path.join(log_dir_path, f"{dir_name}.txt_lidar")
+            if not os.path.exists(pointcloud_dir):
+                print(f"Diretório de nuvens de pontos não encontrado: {pointcloud_dir}")
+                continue
 
-                    # Lista para armazenar o dataset
-                    dataset_np = []
+            # Caminho para o diretório de saída
+            output_dir = os.path.abspath(os.path.join(script_path, "..", "data", "output"))
+            os.makedirs(output_dir, exist_ok=True)
 
-                    # Abrir o arquivo de log
-                    with open(log_file_path, 'r') as f:
-                        for line in f:
-                            parts = line.strip().split()
-                            if len(parts) < 2 or line.startswith('#'):
-                                continue
+            # Caminho para o arquivo .npy de saída
+            dataset_output_path = os.path.join(output_dir, f"{dir_name}.npy")
 
-                            elif parts[0] == VELODYNE_TAG:  # Nuvens de pontos (VELODYNE_PARTIAL_SCAN_IN_FILE)
-                                try:
-                                    # Verificar se a mensagem tem o número correto de partes
-                                    if len(parts) < 6:
-                                        print(f"Mensagem de nuvem de pontos malformada: {line}")
-                                        continue
+            try:
+                # Ler o arquivo de posição global
+                globalpos_data = read_globalpos_file(globalpos_file_path)
+                if len(globalpos_data) == 0:
+                    print(f"Erro: Nenhum dado de posição global encontrado no arquivo {globalpos_file_path}.")
+                    continue
 
-                                    # Extrair o caminho do arquivo .pointcloud
-                                    pc_file = parts[1]
-                                    if pc_file.startswith("_lidar/"):
-                                        pc_file = pc_file[len("_lidar/"):]
+                # Arrays NumPy para armazenar nuvens de pontos
+                pointcloud_timestamps = np.array([], dtype=np.float64)
+                pointcloud_data = []  # Lista temporária para nuvens de pontos
 
-                                    # Construir o caminho completo do arquivo .pointcloud
-                                    pc_path = os.path.join(pointcloud_dir, pc_file)
+                # Lista para armazenar o dataset
+                dataset_np = []
 
-                                    # Verificar se o arquivo .pointcloud existe
-                                    if not os.path.exists(pc_path):
-                                        print(f"Arquivo .pointcloud não encontrado: {pc_path}")
-                                        continue
-
-                                    # Converter dados binários em pontos 3D
-                                    points = binaryTo3d(pc_path)
-                                    if points is None:
-                                        print(f"Erro ao converter nuvem de pontos: {pc_path}")
-                                        continue
-
-                                    # Extrair o timestamp da nuvem de pontos
-                                    velodyne_timestamp = float(parts[-3])
-
-                                    # Armazenar nuvem de pontos no array
-                                    pointcloud_timestamps = np.append(pointcloud_timestamps, velodyne_timestamp)
-                                    pointcloud_data.append(points)
-
-                                    #print(f"Nuvem de pontos processada: timestamp={velodyne_timestamp}, arquivo={pc_path}")
-                                except (IndexError, ValueError) as e:
-                                    print(f"Erro ao processar mensagem de nuvem de pontos: {line}. Detalhes: {e}")
-                                    continue
-
-                    # Associar nuvens de pontos a posições globais
-                    print("Associar nuvens de pontos a posições globais")
-                    for i, pc_timestamp in enumerate(pointcloud_timestamps):
-                        try:
-                            # Encontrar a posição global mais próxima no tempo
-                            nearest_index = find_nearest_timestamp(pc_timestamp, globalpos_data['timestamp'])
-                            
-                            # Verificar se nearest_index é válido
-                            if nearest_index < 0 or nearest_index >= len(globalpos_data):
-                                print(f"Índice inválido para globalpos_data: {nearest_index}")
-                                continue
-
-                            # Acessar a posição global mais próxima
-                            nearest_position = globalpos_data[nearest_index]
-
-                            # Adicionar ao dataset numpy
-                            dataset_np.append({
-                                "timestamp": pc_timestamp,
-                                "x": nearest_position['x'],
-                                "y": nearest_position['y'],
-                                "theta": nearest_position['theta'],
-                                "pointcloud": pointcloud_data[i]
-                            })
-                        except Exception as e:
-                            print(f"Erro ao associar nuvem de pontos a posição global: {e}")
+                # Abrir o arquivo de log
+                with open(log_file_path, 'r') as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) < 2 or line.startswith('#'):
                             continue
 
-                    # Salvar o dataset numpy
-                    np.save(dataset_output_path, dataset_np)
-                    print(f"Dataset salvo em {dataset_output_path}")
-                    print_dataset_structure(dataset_output_path)
+                        elif parts[0] == VELODYNE_TAG:  # Nuvens de pontos (VELODYNE_PARTIAL_SCAN_IN_FILE)
+                            try:
+                                # Verificar se a mensagem tem o número correto de partes
+                                if len(parts) < 6:
+                                    print(f"Mensagem de nuvem de pontos malformada: {line}")
+                                    continue
 
-                except FileNotFoundError as e:
-                    print(f"Erro: {e}")
-                except Exception as e:
-                    print(f"Erro inesperado: {e}")
+                                # Extrair o caminho do arquivo .pointcloud
+                                pc_file = parts[1]
+                                if pc_file.startswith("_lidar/"):
+                                    pc_file = pc_file[len("_lidar/"):]
+
+                                # Construir o caminho completo do arquivo .pointcloud
+                                pc_path = os.path.join(pointcloud_dir, pc_file)
+
+                                # Verificar se o arquivo .pointcloud existe
+                                if not os.path.exists(pc_path):
+                                    print(f"Arquivo .pointcloud não encontrado: {pc_path}")
+                                    continue
+
+                                # Converter dados binários em pontos 3D
+                                points = binaryTo3d(pc_path)
+                                if points is None:
+                                    print(f"Erro ao converter nuvem de pontos: {pc_path}")
+                                    continue
+
+                                # Extrair o timestamp da nuvem de pontos
+                                velodyne_timestamp = float(parts[-1])
+
+                                # Armazenar nuvem de pontos no array
+                                pointcloud_timestamps = np.append(pointcloud_timestamps, velodyne_timestamp)
+                                pointcloud_data.append(points)
+
+                                print(f"Nuvem de pontos processada: timestamp={velodyne_timestamp}, arquivo={pc_path}")
+                            except (IndexError, ValueError) as e:
+                                print(f"Erro ao processar mensagem de nuvem de pontos: {line}. Detalhes: {e}")
+                                continue
+
+                # Associar nuvens de pontos a posições globais
+                print("Associar nuvens de pontos a posições globais")
+                for i, pc_timestamp in enumerate(pointcloud_timestamps):
+                    try:
+                        # Encontrar a posição global mais próxima no tempo
+                        nearest_index = find_nearest_timestamp(pc_timestamp, globalpos_data['timestamp'])
+                        
+                        # Verificar se nearest_index é válido
+                        if nearest_index < 0 or nearest_index >= len(globalpos_data):
+                            print(f"Índice inválido para globalpos_data: {nearest_index}")
+                            continue
+
+                        # Acessar a posição global mais próxima
+                        nearest_position = globalpos_data[nearest_index]
+
+                        # Adicionar ao dataset numpy
+                        dataset_np.append({
+                            "timestamp": pc_timestamp,
+                            "x": nearest_position['x'],
+                            "y": nearest_position['y'],
+                            "theta": nearest_position['theta'],
+                            "pointcloud": pointcloud_data[i]
+                        })
+                    except Exception as e:
+                        print(f"Erro ao associar nuvem de pontos a posição global: {e}")
+                        continue
+
+                # Salvar o dataset numpy
+                np.save(dataset_output_path, dataset_np)
+                print(f"Dataset salvo em {dataset_output_path}")
+                print_dataset_structure(dataset_output_path)
+
+            except FileNotFoundError as e:
+                print(f"Erro: {e}")
+            except Exception as e:
+                print(f"Erro inesperado: {e}")
+
+            # Processar apenas o primeiro diretório de log encontrado
+            break
 
 if __name__ == "__main__":
     main()
