@@ -1,159 +1,183 @@
-import numpy as np
 import os
-import tensorflow as tf
-from tensorflow.keras import layers, Model
-from sklearn.model_selection import train_test_split
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader, random_split
 
-# Função para calcular a distância de um ponto a um segmento de reta
-def distance_to_segment(point, segment_start, segment_end):
-    """
-    Calcula a distância de um ponto a um segmento de reta.
-    :param point: Ponto (x, y).
-    :param segment_start: Ponto inicial do segmento (x, y).
-    :param segment_end: Ponto final do segmento (x, y).
-    :return: Distância do ponto ao segmento.
-    """
-    def dot(v, w):
-        return v[0] * w[0] + v[1] * w[1]
+class LaneDataset(Dataset):
+    def __init__(self, data_path, normalize_params=None):
+        data = np.load(data_path, allow_pickle=True)
+        self.pointclouds = data['pointclouds']
+        self.distances = data['distances']
+        
+        # Usa parâmetros de normalização fornecidos ou calcula novos
+        if normalize_params:
+            self.normalize_params = normalize_params
+        else:
+            self.normalize_params = {
+                'distance': {
+                    'mean': np.mean(self.distances),
+                    'std': np.std(self.distances)
+                }
+            }
+    
+    def __len__(self):
+        return len(self.distances)
+    
+    def __getitem__(self, idx):
+        pc = self.pointclouds[idx]
+        
+        if len(pc) > 1000:
+            pc = pc[np.random.choice(len(pc), 1000, replace=False)]
+        
+        coords = pc[:, :3]
+        coords = (coords - coords.mean(axis=0)) / (coords.std(axis=0) + 1e-8)
+        
+        distance = (self.distances[idx] - self.normalize_params['distance']['mean']) / \
+                   self.normalize_params['distance']['std']
+        
+        return {
+            'coordinates': torch.FloatTensor(coords),  # Shape: (1000, 3)
+            'distance': torch.FloatTensor([distance])   # Shape: (1,)
+        }
 
-    def length(v):
-        return np.sqrt(v[0] ** 2 + v[1] ** 2)
+def split_dataset(dataset, test_size=0.2):
+    """Divide o dataset em treino e teste de forma aleatória"""
+    test_len = int(len(dataset) * test_size)
+    train_len = len(dataset) - test_len
+    return random_split(dataset, [train_len, test_len])
 
-    def vector(p1, p2):
-        return [p2[0] - p1[0], p2[1] - p1[1]]
-
-    def point_to_line_distance(p, l1, l2):
-        line_vec = vector(l1, l2)
-        p_vec = vector(l1, p)
-        line_len = length(line_vec)
-        if line_len == 0:
-            return length(p_vec)
-        t = max(0, min(1, dot(p_vec, line_vec) / (line_len ** 2)))
-        projection = [l1[0] + t * line_vec[0], l1[1] + t * line_vec[1]]
-        return length(vector(p, projection))
-
-    return point_to_line_distance(point, segment_start, segment_end)
-
-
-# Função para preparar os dados
-def prepare_data(datasets, base_index):
-    """
-    Prepara os dados para treinamento.
-    :param datasets: Lista de datasets carregados.
-    :param base_index: Índice da instância base.
-    :return: X (nuvens de pontos), y (distâncias).
-    """
-    X = []
-    y = []
-
-    # Escolher a instância base
-    base_instance = datasets[base_index][0]  # Primeira entrada do dataset base
-    base_pointcloud = base_instance['pointcloud']
-    base_position = (base_instance['x'], base_instance['y'])  # Posição global do veículo
-
-    # Calcular as distâncias para todas as instâncias
-    for dataset in datasets:
-        for entry in dataset:
-            pointcloud = entry['pointcloud']
-            position = (entry['x'], entry['y'])  # Posição global do veículo
-
-            # Calcular a distância ao segmento de reta da instância base
-            distance = distance_to_segment(position, base_position, (base_position[0] + 1, base_position[1] + 1))
-            X.append(pointcloud)
-            y.append(distance)
-
-    return np.array(X), np.array(y)
-
-
-# Carregar os datasets .npy
-def load_datasets(data_dir):
-    """
-    Carrega todos os datasets .npy de um diretório.
-    :param data_dir: Diretório contendo os arquivos .npy.
-    :return: Lista de datasets.
-    """
-    datasets = []
-    for file_name in os.listdir(data_dir):
-        if file_name.endswith(".npy"):
-            dataset = np.load(os.path.join(data_dir, file_name), allow_pickle=True)
-            datasets.append(dataset)
-    return datasets
-
-
-# Definir o modelo PointNet (usando a implementação anterior)
-class PointNet(Model):
-    def __init__(self, num_points, name="PointNet"):
-        super(PointNet, self).__init__(name=name)
-        self.num_points = num_points
-
-        # Camadas do PointNet
-        self.conv1 = layers.Conv1D(64, 1, activation='relu')
-        self.conv2 = layers.Conv1D(128, 1, activation='relu')
-        self.conv3 = layers.Conv1D(1024, 1, activation='relu')
-        self.max_pool = layers.GlobalMaxPooling1D()
-        self.fc1 = layers.Dense(512, activation='relu')
-        self.fc2 = layers.Dense(256, activation='relu')
-        self.fc3 = layers.Dense(1, activation=None)  # Saída para regressão
-
-        # Batch normalization
-        self.bn1 = layers.BatchNormalization()
-        self.bn2 = layers.BatchNormalization()
-        self.bn3 = layers.BatchNormalization()
-
-    def call(self, inputs):
-        x = self.conv1(inputs)
-        x = self.bn1(x)
-        x = self.conv2(x)
-        x = self.bn2(x)
-        x = self.conv3(x)
-        x = self.bn3(x)
-        x = self.max_pool(x)
-        x = self.fc1(x)
-        x = self.fc2(x)
-        x = self.fc3(x)
+class PointNetPP(nn.Module):
+    def __init__(self, norm_mean=0.0, norm_std=1.0):
+        super().__init__()
+        self.register_buffer('norm_mean', torch.tensor(norm_mean))
+        self.register_buffer('norm_std', torch.tensor(norm_std))
+        
+        self.mlp1 = nn.Sequential(
+            nn.Linear(3, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Linear(64, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU()
+        )
+        
+        self.mlp2 = nn.Sequential(
+            nn.Linear(128, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Linear(256, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Linear(512, 1)
+        )
+    
+    def forward(self, x, denormalize=False):
+        batch_size, num_points, _ = x.shape
+        x = x.view(-1, 3)
+        x = self.mlp1(x)
+        x = x.view(batch_size, num_points, -1)
+        x = torch.max(x, dim=1)[0]
+        x = self.mlp2(x)
+        
+        if denormalize:
+            return x * self.norm_std + self.norm_mean
         return x
 
+def train_model(data_path, epochs=50, batch_size=32, test_size=0.2):
+    # Carrega dataset completo
+    full_dataset = LaneDataset(data_path)
+    
+    # Divide em treino e teste
+    train_dataset, test_dataset = split_dataset(full_dataset, test_size)
+    
+    # DataLoaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    
+    # Modelo com normalização baseada no treino
+    model = PointNetPP(
+        norm_mean=full_dataset.normalize_params['distance']['mean'],
+        norm_std=full_dataset.normalize_params['distance']['std']
+    )
+    
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.MSELoss()
+    
+    # Treinamento
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0
+        
+        for batch in train_loader:
+            coords, target = batch['coordinates'], batch['distance']
+            coords = coords.view(len(target), -1, 3)
+            
+            output = model(coords)
+            loss = criterion(output, target)
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+        
+        # Avaliação no teste
+        model.eval()
+        test_loss = 0
+        with torch.no_grad():
+            for batch in test_loader:
+                coords, target = batch['coordinates'], batch['distance']
+                coords = coords.view(len(target), -1, 3)
+                output = model(coords)
+                test_loss += criterion(output, target).item()
+        
+        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {train_loss/len(train_loader):.4f}, Test Loss: {test_loss/len(test_loader):.4f}")
+    
+    return model, test_dataset
 
-# Treinamento do modelo
-def train_model(X, y, num_points, epochs=50, batch_size=32):
-    """
-    Treina o modelo PointNet.
-    :param X: Nuvens de pontos.
-    :param y: Distâncias.
-    :param num_points: Número de pontos em cada nuvem.
-    :param epochs: Número de épocas.
-    :param batch_size: Tamanho do batch.
-    """
-    # Dividir os dados em treino e teste
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+def evaluate_model(model, test_dataset):
+    model.eval()
+    errors = []
+    
+    for i in range(len(test_dataset)):
+        sample = test_dataset[i]
+        coords = sample['coordinates'].unsqueeze(0)
+        pred = model(coords, denormalize=True).item()
+        true = sample['distance'].item() * test_dataset.dataset.normalize_params['distance']['std'] + test_dataset.dataset.normalize_params['distance']['mean']
+        errors.append(abs(pred - true))
+    
+    print(f"\nAvaliação Final:")
+    print(f"Erro Médio Absoluto: {np.mean(errors):.2f} m")
+    print(f"Desvio Padrão do Erro: {np.std(errors):.2f} m")
+    print(f"Erro Máximo: {np.max(errors):.2f} m")
 
-    # Construir o modelo
-    model = PointNet(num_points=num_points)
-    model.build(input_shape=(None, num_points, 3))
-    model.compile(optimizer='adam', loss='mse')
+def predict_distance(model, pointcloud):
+    if len(pointcloud) > 1000:
+        pointcloud = pointcloud[np.random.choice(len(pointcloud), 1000, replace=False)]
+    
+    coords = pointcloud[:, :3]
+    coords = (coords - coords.mean(axis=0)) / (coords.std(axis=0) + 1e-8)
+    coords = torch.FloatTensor(coords).unsqueeze(0)  # Shape: (1, 1000, 3)
+    
+    with torch.no_grad():
+        model.eval()
+        pred = model(coords, denormalize=True)
+    
+    return pred.item()
 
-    # Treinar o modelo
-    history = model.fit(X_train, y_train, epochs=epochs, batch_size=batch_size, validation_data=(X_test, y_test))
-
-    return model, history
-
-
-# Função principal
 if __name__ == "__main__":
-    # Diretório contendo os datasets .npy
-    data_dir = "data/output"
-
-    # Carregar os datasets
-    datasets = load_datasets(data_dir)
-
-    # Preparar os dados (escolher a primeira instância como base)
-    X, y = prepare_data(datasets, base_index=0)
-
-    # Número de pontos em cada nuvem de pontos
-    num_points = X.shape[1]
-
-    # Treinar o modelo
-    model, history = train_model(X, y, num_points=num_points, epochs=50, batch_size=32)
-
-    # Salvar o modelo treinado
-    model.save("pointnet_regression_model.h5")
+    data_path = os.path.join(os.path.dirname(__file__), "..", "data", "training_data", "complete_training_data.npz")
+    
+    # Treinar e avaliar
+    model, test_dataset = train_model(data_path, epochs=2000, batch_size=64)
+    torch.save(model.state_dict(), "lane_distance_regressor.pth")
+    
+    # Avaliação detalhada
+    evaluate_model(model, test_dataset)
+    
+    # Exemplo de predição
+    sample_data = np.load(data_path, allow_pickle=True)
+    sample_pc = sample_data['pointclouds'][0]
+    distance = predict_distance(model, sample_pc)
+    print(f"\nExemplo de Predição: {distance:.2f} m")
