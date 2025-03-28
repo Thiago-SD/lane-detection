@@ -280,19 +280,21 @@ def predict_distance(model, pointcloud):
     return pred.item()
 
 if __name__ == "__main__":
-    data_path = os.path.join(os.path.dirname(__file__), "..", "data", "training_data", "complete_training_data.npz")
+    data_path = os.path.join(os.path.dirname(__file__), "..", "data")
+    model_dir = data_path + "/models"
+    os.makedirs(model_dir)
     
     try:
         # Treinar e avaliar
-        model, test_dataset, metrics = train_model(data_path, epochs=NUM_EPOCHS, batch_size=64)
-        torch.save(model.state_dict(), "lane_distance_regressor.pth")
+        model, test_dataset, metrics = train_model(data_path + "/training_data/complete_training_data.npz", epochs=NUM_EPOCHS, batch_size=64)
+        torch.save(model.state_dict(), model_dir + "/lane_distance_regressor.pth")
         print("Modelo treinado e salvo com sucesso.")
         
         # Avaliação detalhada
         evaluate_model(model, test_dataset)
         
         # Exemplo de predição
-        sample_data = np.load(data_path, allow_pickle=True)
+        sample_data = np.load(data_path + "/training_data/complete_training_data.npz", allow_pickle=True)
         sample_pc = sample_data['pointclouds'][0]
         distance = predict_distance(model, sample_pc)
         print(f"\nExemplo de Predição: {distance:.2f} m")

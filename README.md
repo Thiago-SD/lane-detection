@@ -36,16 +36,16 @@ Após a configuração do ambiente, será necessário preparar os dados que ser�
 
 ![image](https://github.com/user-attachments/assets/b00a7991-9ccc-4f34-a6d0-383b5da6f13c)
 
-![image](https://github.com/user-attachments/assets/bef311d9-7452-4574-9b26-927f97ab3e81)
+![image](https://github.com/user-attachments/assets/178b3346-62d6-47e0-ad80-aff8752f18d1)
 
 3. O número de épocas de execução do treino do modelo pode ser alterado via constante NUM_EPOCHS dentro do script pointnet.py:
 
 ![image](https://github.com/user-attachments/assets/c5202096-5ec2-43e7-9b08-3d733a5c7dc7)
 
 
-4. Após o treino, o modelo é salvo no formato lane_distance_regressor.pth para uso futuro no mesmo diretório que o script:
+4. Após o treino, o modelo é salvo no formato lane_distance_regressor.pth para uso futuro no diretório data/models:
 
-   ![image](https://github.com/user-attachments/assets/8aa7a0cc-9e95-45cb-ad84-a14b47f424a5)
+   ![image](https://github.com/user-attachments/assets/bac667c8-52a6-4a6a-a0ad-29f1d8377cad)
 
 5. Esse modelo pode então ser usado para prever a distância até o centro da lane via dados de Lidar
 
