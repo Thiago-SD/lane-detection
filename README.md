@@ -1,6 +1,6 @@
 # lane-detection
 
-##1 - Configuração de Ambiente
+## 1 - Configuração de Ambiente
 
 Para realizar a criação de um ambiente virtual e instalação das dependências necessárias para a execução do módulo, favor seguir os passos após clonar o repositório
 1. Crie um ambiente virtual com o comando: `python3 -m venv pointnet_env`
@@ -9,7 +9,7 @@ Para realizar a criação de um ambiente virtual e instalação das dependência
     No Windows: `pointnet_env\Scripts\activate`
 3. Instale as dependências com o comando: `pip install -r requirements.txt`
 
-##2 - Coleta e pré processamento de dados
+## 2 - Coleta e pré processamento de dados
 
 Após a configuração do ambiente, será necessário preparar os dados que serão utilizados no treino do modelo
 
@@ -36,7 +36,7 @@ LANE-DETECTION/
 
 ![image](https://github.com/user-attachments/assets/79730d22-d18b-443b-b71e-4947e4f26b00)
 
-##3 - Treino e teste do modelo via Deep Learning
+## 3 - Treino e teste do modelo via Deep Learning
 
 1. Executar o script pointnet.py com `python3 pointnet.py`
 2. O desempenho do treino pode ser acompanhado na imagem training_metrics.png presente no mesmo diretório que o script, como no exemplo:
