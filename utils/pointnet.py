@@ -6,6 +6,8 @@ from torch.utils.data import Dataset, DataLoader, random_split
 import matplotlib.pyplot as plt
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
+NUM_EPOCHS = 100
+
 class LaneDataset(Dataset):
     def __init__(self, data_path, normalize_params=None):
         print(f"Carregando dataset de {data_path}...")
@@ -282,7 +284,7 @@ if __name__ == "__main__":
     
     try:
         # Treinar e avaliar
-        model, test_dataset, metrics = train_model(data_path, epochs=2000, batch_size=64)
+        model, test_dataset, metrics = train_model(data_path, epochs=NUM_EPOCHS, batch_size=64)
         torch.save(model.state_dict(), "lane_distance_regressor.pth")
         print("Modelo treinado e salvo com sucesso.")
         
