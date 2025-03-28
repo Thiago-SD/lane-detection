@@ -16,13 +16,6 @@ Após a configuração do ambiente, será necessário preparar os dados que ser�
 1. Baixar e descompatar dados de log da IARA (como por exemplo, os disponíveis em https://drive.google.com/drive/folders/1zEuzg3mQIVOG6q_5n-x_Fz0rClFfqzqJ) em um diretório /lane-detection/data/input
 2. Depositar os arquivos contendo a captura das posições globais correspondentes ao arquivo de log descompactado no mesmo diretório, com a nomenclatura globalpos_log_volta_da_ufes_<data>.txt
 3. Após estes passos, a estrutura de arquivos deverá ficar como:
-LANE-DETECTION/
-│
-├── data/
-│   └── input/
-│       ├── log_volta_da_ufes_<data>/
-│
-├── globalpos_log_volta_da_ufes_<data>.txt
 
 ![image](https://github.com/user-attachments/assets/3a00aeb1-468c-40c7-a866-f6710fdaf47c)
 
