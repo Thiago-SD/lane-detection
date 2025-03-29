@@ -282,7 +282,7 @@ def predict_distance(model, pointcloud):
 if __name__ == "__main__":
     data_path = os.path.join(os.path.dirname(__file__), "..", "data")
     model_dir = data_path + "/models"
-    os.makedirs(model_dir)
+    os.makedirs(model_dir, exist_ok=True)
     
     try:
         # Treinar e avaliar
