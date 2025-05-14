@@ -46,6 +46,10 @@ def load_all_globalpos(data_dir):
     print(f"Total de pontos carregados: {len(all_data)}")
     return all_data
 
+#Nota: Atualmente, são utilizadas apenas as globalpos armazenadas junto à pointclouds nos arquivos .npy para calcular o caminho mediano, 
+#será alterado para que todos os 20 arquivos de globalpos capturados sejam utilizados na criação do caminho mediano
+#Também serão estudadas alternativas para definir o caminho mediano, ao invés de apenas calcular a mediana de pontos no mesmo timestamp,
+#como por exemplo: utilização de centróides ou regressão linear
 def calculate_median_path(all_globalpos):
     """Calcula caminho mediano considerando tempo e orientação"""
     print("\n[2/4] Calculando caminho mediano...")
@@ -151,6 +155,10 @@ def calculate_distances(sampled_data, median_path):
         # Acessa as coordenadas diretamente do item (estrutura fixa)
         point = np.array([item['globalpos'][0], item['globalpos'][1]])  # x, y
         theta = item['globalpos'][2]  # theta
+        
+        #Nota: A associação entre os pontos do caminho mediano e os pontos da posição global da pointcloud esta sendo feita
+        #por meio dos valores numéricos das coordenadas x e y, isso deve ser corrigido, para que a associação seja feita 
+        #levando em conta o timestamp e a angulação theta do veículo, para garantir int egridade dos dados
         
         # Encontra os 2 pontos mais próximos
         _, indices = tree.query(point, k=2)

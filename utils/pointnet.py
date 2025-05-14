@@ -33,6 +33,7 @@ class LaneDataset(Dataset):
     def __getitem__(self, idx):
         pc = self.pointclouds[idx]
         
+        #Nota: Amostragem de 1000 pontos por Pointcloud, potencial alteração para treinamentos futuros
         if len(pc) > 1000:
             pc = pc[np.random.choice(len(pc), 1000, replace=False)]
         
@@ -53,6 +54,7 @@ def split_dataset(dataset, test_size=0.2):
     train_len = len(dataset) - test_len
     return random_split(dataset, [train_len, test_len])
 
+#Nota: Arquitetura de rede neural está sujeita a alteração caso seja proveitoso
 class PointNetPP(nn.Module):
     def __init__(self, norm_mean=0.0, norm_std=1.0):
         super().__init__()
@@ -289,6 +291,7 @@ if __name__ == "__main__":
         model, test_dataset, metrics = train_model(data_path + "/training_data/complete_training_data.npz", epochs=NUM_EPOCHS, batch_size=64)
         torch.save(model.state_dict(), model_dir + "/lane_distance_regressor.pth")
         print("Modelo treinado e salvo com sucesso.")
+
         
         # Avaliação detalhada
         evaluate_model(model, test_dataset)
