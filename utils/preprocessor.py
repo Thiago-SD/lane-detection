@@ -1,15 +1,18 @@
 import numpy as np
+import matplotlib.pyplot as plt
 import os
 from scipy.spatial import KDTree
 from collections import defaultdict
+from scipy.interpolate import splprep, splev
 from scipy.signal import savgol_filter
+from dataset import read_globalpos_file
 
 # Constantes
 VELODYNE_TAG = 'VELODYNE_PARTIAL_SCAN_IN_FILE'
 TIME_WINDOW = 0.2  # Janela temporal para agrupamento (em segundos)
 SAMPLES_PER_FILE = 200
 
-def load_all_globalpos(data_dir):
+def load_all_globalpos_old(data_dir):
     """Carrega todas as posições globais dos arquivos .npy"""
     print("\n[1/4] Carregando dados de posição global...")
     all_files = sorted([f for f in os.listdir(data_dir) if f.endswith('.npy')])
@@ -46,11 +49,63 @@ def load_all_globalpos(data_dir):
     print(f"Total de pontos carregados: {len(all_data)}")
     return all_data
 
+def load_all_globalpos(data_dir):
+    """Carrega todas as posições globais dos arquivos .txt de globalpos"""
+    print("\n[1/4] Carregando dados de posição global dos arquivos txt...")
+    
+    # Lista todos os arquivos globalpos_*.txt no diretório
+    all_files = sorted([f for f in os.listdir(data_dir) 
+                       if f.startswith('globalpos_') and f.endswith('.txt')])
+    
+    # Array para armazenar os arrays de cada arquivo
+    all_data_arrays = []
+    
+    for filename in all_files:
+        filepath = os.path.join(data_dir, filename)
+        print(f"Processando arquivo: {filename}")
+        
+        try:
+            # Usa a função do dataset.py para ler o arquivo
+            file_data = read_globalpos_file(filepath)
+            
+            if len(file_data) == 0:
+                print(f"Arquivo sem dados válidos: {filename}")
+                continue
+            
+            # Calcula timestamp relativo (baseado no primeiro timestamp do arquivo)
+            base_timestamp = file_data['timestamp'][0]
+            relative_timestamps = file_data['timestamp'] - base_timestamp
+            
+            # Converte para o formato desejado (array de dicionários)
+            file_data_list = []
+            for i in range(len(file_data)):
+                file_data_list.append({
+                    'x': file_data['x'][i],
+                    'y': file_data['y'][i],
+                    'theta': file_data['theta'][i],
+                    'global_timestamp': file_data['timestamp'][i],
+                    'relative_timestamp': relative_timestamps[i],
+                    'filename': filename,
+                    'file_index': i
+                })
+            
+            # Adiciona o array deste arquivo à lista principal
+            all_data_arrays.append(np.array(file_data_list))
+            
+        except Exception as e:
+            print(f"Erro ao processar {filename}: {str(e)}")
+            continue
+    
+    print(f"Total de arquivos processados: {len(all_data_arrays)}")
+    print(f"Total de pontos carregados: {sum(len(arr) for arr in all_data_arrays)}")
+    
+    return all_data_arrays
+
 #Nota: Atualmente, são utilizadas apenas as globalpos armazenadas junto à pointclouds nos arquivos .npy para calcular o caminho mediano, 
 #será alterado para que todos os 20 arquivos de globalpos capturados sejam utilizados na criação do caminho mediano
 #Também serão estudadas alternativas para definir o caminho mediano, ao invés de apenas calcular a mediana de pontos no mesmo timestamp,
 #como por exemplo: utilização de centróides ou regressão linear
-def calculate_median_path(all_globalpos):
+def calculate_median_path_old(all_globalpos):
     """Calcula caminho mediano considerando tempo e orientação"""
     print("\n[2/4] Calculando caminho mediano...")
     
@@ -100,6 +155,78 @@ def smooth_path(path, window_size=5, polyorder=2):
     
     return path
 
+def fit_elliptical_path(points, n_interp=1000):
+    """
+    Ajusta um caminho elipsoidal fechado usando splines periódicas
+    
+    Args:
+        points: Array de pontos (Nx2) com as coordenadas x,y
+        n_interp: Número de pontos para interpolação
+        
+    Returns:
+        Tuple: (pontos interpolados, derivadas, curvatura)
+    """
+    # Fecha o anel adicionando o primeiro ponto no final
+    closed_loop = np.vstack([points, points[0]])
+    
+    # Parametrização por distância acumulada
+    diffs = np.diff(closed_loop, axis=0)
+    dists = np.sqrt((diffs**2).sum(axis=1))
+    t = np.concatenate([[0], dists.cumsum()])
+    t_normalized = t/t[-1]
+    
+    # Ajuste de spline periódica
+    tck, u = splprep([closed_loop[:,0], closed_loop[:,1]], u=t_normalized, 
+                     per=True, s=0)
+    
+    # Gera pontos interpolados
+    u_new = np.linspace(0, 1, n_interp)
+    x, y = splev(u_new, tck)
+    dx, dy = splev(u_new, tck, der=1)
+    ddx, ddy = splev(u_new, tck, der=2)
+    
+    # Calcula curvatura
+    curvature = (dx * ddy - dy * ddx) / (dx**2 + dy**2)**1.5
+    
+    return np.column_stack([x, y]), np.column_stack([dx, dy]), curvature
+
+def calculate_median_path(all_data_arrays, plot_dir=None):
+    """Calcula caminho mediano elipsoidal"""
+    print("\n[2/4] Calculando caminho mediano elipsoidal...")
+    
+    # Processa pontos
+    all_data = np.concatenate(all_data_arrays)
+    points = np.array([[item['x'], item['y']] for item in all_data])
+    
+    # Verificação de dados
+    if len(points) < 4:
+        raise ValueError("Pelo menos 4 pontos distintos são necessários para formar um anel")
+    
+    # Remove duplicatas e ordena por ângulo polar
+    points = np.unique(points, axis=0)
+    centroid = points.mean(axis=0)
+    angles = np.arctan2(points[:,1]-centroid[1], points[:,0]-centroid[0])
+    points = points[np.argsort(angles)]
+    
+    # Ajusta spline periódica
+    path_interp, derivatives, _ = fit_elliptical_path(points)
+    
+    # Calcula ângulos (orientação da tangente)
+    theta = np.arctan2(derivatives[:,1], derivatives[:,0])
+    
+    # Gera gráfico
+    if plot_dir:
+        plot_interpolation_results(points, path_interp, plot_dir)
+    
+    # Retorna caminho mediano
+    return [{
+        'x': path_interp[i,0],
+        'y': path_interp[i,1],
+        'theta': theta[i],
+        'relative_timestamp': i/len(path_interp),
+        'n_points': len(points)
+    } for i in range(len(path_interp))]
+
 def sample_pointclouds(data_dir):
     """Amostra pointclouds e associa ao caminho mediano"""
     print("\n[3/4] Amostrando pointclouds...")
@@ -145,7 +272,7 @@ def sample_pointclouds(data_dir):
 
 def calculate_distances(sampled_data, median_path):
     """Calcula distâncias até o caminho mediano considerando theta"""
-    print("\n[4/5] Calculando distâncias...")
+    print("\nCalculando distâncias...")
     
     # Prepara KDTree com posições do caminho mediano
     median_coords = np.array([[p['x'], p['y']] for p in median_path])
@@ -326,22 +453,63 @@ def view_training_data(npz_file_path, num_samples=5):
         if 'data' in locals():
             data.close()
 
+def plot_interpolation_results(original_points, interpolated_points, plot_dir):
+    """
+    Gera e salva gráficos comparando os pontos originais com a trajetória interpolada
+    
+    Args:
+        original_points: Array numpy com os pontos originais (Nx2)
+        interpolated_points: Array numpy com os pontos interpolados (Mx2)
+        plot_dir: Diretório para salvar os gráficos
+    """
+    try:
+        os.makedirs(plot_dir, exist_ok=True)
+        
+        plt.figure(figsize=(12, 6))
+        
+        # Gráfico principal
+        plt.scatter(original_points[:, 0], original_points[:, 1], 
+                   c='blue', s=20, alpha=0.4, label='Pontos Originais')
+        plt.plot(interpolated_points[:, 0], interpolated_points[:, 1], 
+                'r-', linewidth=2, label='Trajetória Interpolada')
+        
+        plt.title('Comparação: Pontos Originais vs. Trajetória Interpolada')
+        plt.xlabel('Coordenada X (metros)')
+        plt.ylabel('Coordenada Y (metros)')
+        plt.legend()
+        plt.grid(True)
+        
+        # Salva o gráfico
+        plot_path = os.path.join(plot_dir, 'median_path_interpolation.png')
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Gráfico de interpolação salvo em: {plot_path}")
+        
+    except Exception as e:
+        print(f"Erro ao gerar gráfico: {str(e)}")
+
 def main():
     print("="*60)
     print(" PRÉ-PROCESSAMENTO DE DADOS LIDAR ")
     print("="*60)
     
     # Configura caminhos
-    data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "output")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "input")
     output_dir = os.path.join(os.path.dirname(__file__), "..", "data", "training_data")
+    plot_dir = os.path.join(script_dir, "interpolation_plots")  # Novo diretório para gráficos
     
     # Pipeline principal
-    globalpos_data = load_all_globalpos(data_dir)
-    median_path = calculate_median_path(globalpos_data)
-    sampled_data = sample_pointclouds(data_dir)
-    sampled_data = calculate_distances(sampled_data, median_path)
-    save_training_data(sampled_data, output_dir)
-    view_training_data(output_dir + '/complete_training_data.npz')
+    #globalpos_data = load_all_globalpos_old(data_dir)
+    #median_path = calculate_median_path_old(globalpos_data)
+    globalpos_arrays = load_all_globalpos(data_dir)
+    median_path = calculate_median_path(globalpos_arrays, plot_dir=plot_dir)
+    #sampled_data = sample_pointclouds(data_dir)
+    #sampled_data = calculate_distances(sampled_data, median_path)
+    #save_training_data(sampled_data, output_dir)
+    #view_training_data(output_dir + '/complete_training_data.npz')
     
     print("\nProcesso concluído com sucesso!")
 
