@@ -1,6 +1,11 @@
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 import math
+from sklearn.cluster import KMeans
+from scipy.interpolate import splprep, splev
+from pathlib import Path
+
 
 # Ângulos verticais do Velodyne
 velodyne_vertical_angles = np.array([
@@ -150,6 +155,230 @@ def read_globalpos_file(globalpos_file_path):
         ('timestamp', np.float64)
     ]))
 
+def load_all_globalpos(data_dir):
+    """Carrega todas as posições globais dos arquivos .txt de globalpos"""
+    print("\nCarregando dados de posição global dos arquivos txt...")
+    
+    # Lista todos os arquivos globalpos_*.txt no diretório
+    all_files = sorted([f for f in os.listdir(data_dir) 
+                       if f.startswith('globalpos_') and f.endswith('.txt')])
+    
+    # Array para armazenar os arrays de cada arquivo
+    all_data_arrays = []
+    
+    for filename in all_files:
+        filepath = os.path.join(data_dir, filename)
+        print(f"Processando arquivo: {filename}")
+        
+        try:
+            # Usa a função do dataset.py para ler o arquivo
+            file_data = read_globalpos_file(filepath)
+            
+            if len(file_data) == 0:
+                print(f"Arquivo sem dados válidos: {filename}")
+                continue
+            
+            # Calcula timestamp relativo (baseado no primeiro timestamp do arquivo)
+            base_timestamp = file_data['timestamp'][0]
+            relative_timestamps = file_data['timestamp'] - base_timestamp
+            
+            # Converte para o formato desejado (array de dicionários)
+            file_data_list = []
+            for i in range(len(file_data)):
+                file_data_list.append({
+                    'x': file_data['x'][i],
+                    'y': file_data['y'][i],
+                    'theta': file_data['theta'][i],
+                    'global_timestamp': file_data['timestamp'][i],
+                    'relative_timestamp': relative_timestamps[i],
+                    'filename': filename,
+                    'file_index': i
+                })
+            
+            # Adiciona o array deste arquivo à lista principal
+            all_data_arrays.append(np.array(file_data_list))
+            
+        except Exception as e:
+            print(f"Erro ao processar {filename}: {str(e)}")
+            continue
+    
+    print(f"Total de arquivos processados: {len(all_data_arrays)}")
+    print(f"Total de pontos carregados: {sum(len(arr) for arr in all_data_arrays)}")
+    
+    return all_data_arrays
+
+def calculate_median_path(all_data_arrays, plot_dir=None):
+    """
+    Calcula caminho mediano usando K-Means para agrupamento e centroides
+    
+    Args:
+        all_data_arrays: Lista de arrays com dados de posição global
+        plot_dir: Diretório para salvar gráficos (opcional)
+        n_clusters: Número de clusters para o K-Means (ajuste automático se None)
+        
+    Returns:
+        Lista de dicionários com o caminho mediano
+    """
+    # Concatena e processa os dados
+    all_data = np.concatenate(all_data_arrays)
+    points = np.array([[item['x'], item['y']] for item in all_data])
+    thetas = np.array([item['theta'] for item in all_data])
+    
+    # Determina número ótimo de clusters se não especificado
+    n_clusters = 100
+    
+    # 1. Clusterização com K-Means
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    kmeans.fit(points)
+    centroids = kmeans.cluster_centers_
+    
+    # 2. Ordenação dos centroides para formar um caminho contínuo
+    # Calcula o ponto médio como referência
+    mean_point = centroids.mean(axis=0)
+    
+    # Ordena por ângulo polar em relação ao ponto médio
+    angles = np.arctan2(centroids[:,1]-mean_point[1], centroids[:,0]-mean_point[0])
+    sorted_indices = np.argsort(angles)
+    sorted_centroids = centroids[sorted_indices]
+    
+    # 3. Interpolação com spline periódica (para loop fechado)
+    # Adiciona o primeiro ponto no final para fechar o ciclo
+    closed_loop = np.vstack([sorted_centroids, sorted_centroids[0]])
+    
+    # Parametrização por distância acumulada
+    diffs = np.diff(closed_loop, axis=0)
+    dists = np.sqrt((diffs**2).sum(axis=1))
+    t = np.concatenate([[0], dists.cumsum()])
+    t_normalized = t/t[-1]
+    
+    # Ajuste da spline
+    tck, u = splprep([closed_loop[:,0], closed_loop[:,1]], u=t_normalized, per=True, s=0)
+    
+    # Gera pontos interpolados
+    u_new = np.linspace(0, 1, 500)
+    x_interp, y_interp = splev(u_new, tck)
+    dx, dy = splev(u_new, tck, der=1)  # Derivadas para orientação
+    
+    # 4. Calcula orientação combinada
+    # Atribui ângulos médios a cada cluster
+    cluster_angles = []
+    for i in range(n_clusters):
+        cluster_points = points[kmeans.labels_ == i]
+        if len(cluster_points) > 0:
+            cluster_theta = np.mean(thetas[kmeans.labels_ == i])
+            cluster_angles.append(cluster_theta)
+        else:
+            cluster_angles.append(0)  # Fallback
+    
+    # Interpola os ângulos dos clusters
+    cluster_angles = np.unwrap(cluster_angles)
+    angles_interp = np.interp(u_new, np.linspace(0, 1, len(cluster_angles)+1), 
+                            np.concatenate([cluster_angles, [cluster_angles[0]]]))
+    
+    # Combina orientação da derivada (60%) com ângulo do cluster (40%)
+    theta_interp = np.arctan2(dy, dx)*0.6 + angles_interp*0.4
+    
+    # 5. Visualização (opcional)
+    if plot_dir:
+        plot_interpolation_results(points, centroids, sorted_centroids, 
+                        x_interp, y_interp, theta_interp, plot_dir)
+    
+    # 6. Retorna o caminho mediano
+    return [{
+        'x': x_interp[i],
+        'y': y_interp[i],
+        'theta': theta_interp[i],
+        'relative_timestamp': float(i)/len(x_interp),
+        'n_points': len(points)
+    } for i in range(len(x_interp))]
+
+def plot_interpolation_results(points, centroids, sorted_centroids, 
+                    x_interp, y_interp, theta_interp, plot_dir):
+    """Visualização do processo com K-Means"""
+    try:
+        plt.figure(figsize=(15, 10))
+        
+        # Plot 1: Pontos originais e clusters
+        plt.subplot(2, 2, 1)
+        plt.scatter(points[:,0], points[:,1], c='gray', alpha=0.3, s=5, label='Pontos originais')
+        plt.scatter(centroids[:,0], centroids[:,1], c='red', s=50, label='Centroides K-Means')
+        plt.title('Agrupamento com K-Means')
+        plt.legend()
+        
+        # Plot 2: Centroides ordenados
+        plt.subplot(2, 2, 2)
+        plt.plot(sorted_centroids[:,0], sorted_centroids[:,1], 'bo-', label='Centroides ordenados')
+        plt.title('Ordenação Geométrica dos Centroides')
+        
+        # Plot 3: Trajetória final
+        plt.subplot(2, 2, 3)
+        plt.scatter(points[:,0], points[:,1], c='gray', alpha=0.2, s=5)
+        plt.plot(x_interp, y_interp, 'r-', linewidth=2, label='Trajetória interpolada')
+        
+        # Mostra algumas orientações
+        for i in range(0, len(x_interp), len(x_interp)//10):
+            dx = 0.5 * np.cos(theta_interp[i])
+            dy = 0.5 * np.sin(theta_interp[i])
+            plt.arrow(x_interp[i], y_interp[i], dx, dy, 
+                     head_width=0.3, head_length=0.5, fc='green', ec='green')
+        
+        plt.title('Trajetória Final com Orientação')
+        plt.legend()
+        
+        # Plot 4: Todos os elementos juntos
+        plt.subplot(2, 2, 4)
+        plt.scatter(points[:,0], points[:,1], c='gray', alpha=0.1, s=5)
+        plt.scatter(centroids[:,0], centroids[:,1], c='red', s=30)
+        plt.plot(sorted_centroids[:,0], sorted_centroids[:,1], 'b--', alpha=0.5)
+        plt.plot(x_interp, y_interp, 'r-', linewidth=2)
+        plt.title('Visão Geral do Processamento')
+        
+        plt.tight_layout()
+        os.makedirs(plot_dir, exist_ok=True)
+        plt.savefig(f"{plot_dir}/kmeans_path.png", dpi=300)
+        plt.close()
+        
+    except Exception as e:
+        print(f"Erro ao gerar gráficos: {str(e)}")
+
+def plot_individual_routes(data_dir, output_dir):
+    """
+    Gera gráficos individuais para cada arquivo globalpos
+    """
+    # Encontra todos os arquivos globalpos
+    files = sorted(Path(data_dir).glob('globalpos_*.txt'))
+    
+    if not files:
+        print("Nenhum arquivo globalpos_*.txt encontrado no diretório.")
+        return
+    
+    # Cria diretório de saída
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Plot individual para cada arquivo
+    for filepath in files:
+        points = read_globalpos_file(filepath)
+        n_points = len(points)
+        
+        plt.figure(figsize=(10, 8))
+        plt.plot(points['x'], points['y'], 'b-', linewidth=1, label='Trajetória')
+        plt.scatter(points['x'][0], points['y'][0], c='green', s=100, label='Início')
+        plt.scatter(points['x'][n_points - 1], points['y'][n_points - 1], c='red', s=100, label='Fim')
+        
+        plt.title(f'Rota: {filepath.name}')
+        plt.xlabel('Coordenada X')
+        plt.ylabel('Coordenada Y')
+        plt.legend()
+        plt.grid(True)
+        plt.axis('equal')
+        
+        # Salva o gráfico
+        output_path = os.path.join(output_dir, f'{filepath.stem}.png')
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f'Gráfico salvo: {output_path}')
+
 def print_dataset_structure(dataset_path, num_samples=5):
     """
     Carrega o dataset numpy e imprime o formato dos vetores armazenados.
@@ -193,6 +422,10 @@ def main():
     # Caminho para o diretório de dados de entrada
     input_path = os.path.abspath(os.path.join(script_path, "..", "data", "input"))
 
+    # Caminho para o diretório de saída
+    output_dir = os.path.abspath(os.path.join(script_path, "..", "data", "output"))
+    os.makedirs(output_dir, exist_ok=True)
+
     # Verificar se o diretório de entrada existe
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Diretório de entrada não encontrado: {input_path}")
@@ -203,6 +436,18 @@ def main():
     except Exception as e:
         print(f"Erro ao listar diretórios em {input_path}: {e}")
         return
+    
+    #plot_individual_routes(input_path, output_dir)
+    #return
+
+    # Calcular o Caminho mediano
+    globalpos_data = load_all_globalpos(input_path)
+    median_path = calculate_median_path(globalpos_data)
+
+    # Salvar o Caminho mediano para uso no pré-processamento
+    np.save(os.path.join(output_dir, "/caminho_mediano/caminho_mediano.npy"), median_path)
+
+    return
 
     # Processar cada diretório de log
     for dir_name in dirs:
@@ -226,10 +471,6 @@ def main():
         if not os.path.exists(pointcloud_dir):
             print(f"Diretório de nuvens de pontos não encontrado: {pointcloud_dir}")
             continue
-
-        # Caminho para o diretório de saída
-        output_dir = os.path.abspath(os.path.join(script_path, "..", "data", "output"))
-        os.makedirs(output_dir, exist_ok=True)
 
         # Caminho para o arquivo .npy de saída
         dataset_output_path = os.path.join(output_dir, f"{dir_name}.npy")
