@@ -207,7 +207,7 @@ def load_all_globalpos(data_dir):
     
     return all_data_arrays
 
-def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100, n_segments=5):
+def calculate_median_path(all_data_arrays, plot_dir=None, k=2, n_clusters=100, n_segments=5):
     """Calcula caminho mediano dividindo em segmentos e interpolando cada um separadamente."""
     # Concatena e processa os dados
     all_data = np.concatenate(all_data_arrays)
@@ -256,7 +256,7 @@ def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100, n_segm
         t = np.concatenate([[0], np.cumsum(dists)])
         
         # Interpolação spline
-        tck, _ = splprep([segment_centroids[:,0], segment_centroids[:,1]], u=t, s=0)
+        tck, _ = splprep([segment_centroids[:,0], segment_centroids[:,1]], k=k, u=t, s=0)
         
         # Gera pontos interpolados (número proporcional ao tamanho do segmento)
         n_points = max(50, len(segment_centroids)*2)
@@ -279,79 +279,151 @@ def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100, n_segm
         'n_points': len(points),
         'segment': segment_labels[i]  # Usa os rótulos pré-calculados
     } for i in range(len(all_x_interp))]
-    
-    # 5. Visualização
+
     if plot_dir:
-        plot_segmented_interpolation(points, centroids, segment_indices, 
+        plot_spline_interpolation_process(points, centroids, segment_indices, 
                                    all_x_interp, all_y_interp, plot_dir)
-    
+
     return combined_path
 
-def plot_segmented_interpolation(points, centroids, segment_indices, 
-                               x_interp, y_interp, plot_dir):
-    """Visualização do processo com segmentação"""
-    try:
-        plt.figure(figsize=(15, 10))
-        colors = plt.cm.tab10.colors  # Paleta de cores para os segmentos
+def plot_spline_interpolation_process(points, centroids, segment_indices, x_interp, y_interp, plot_dir=None):
+    """
+    Visualiza o processo completo de interpolação por splines.
+    
+    Args:
+        points: Array de pontos originais (Nx2)
+        centroids: Centroides obtidos pelo K-Means (Kx2)
+        segment_indices: Lista de arrays com índices dos centroides por segmento
+        x_interp, y_interp: Pontos interpolados do caminho final
+        plot_dir: Diretório para salvar os gráficos (None para mostrar na tela)
+    """
+    plt.figure(figsize=(20, 15))
+    colors = plt.cm.tab20.colors  # Paleta de cores para os segmentos
+    
+    # ==============================================
+    # 1. Visualização dos clusters originais
+    # ==============================================
+    plt.subplot(2, 2, 1)
+    
+    # Pontos originais coloridos por cluster (aproximado)
+    kmeans_labels = np.argmin(np.linalg.norm(points[:, np.newaxis] - centroids, axis=2), axis=1)
+    for i in range(len(centroids)):
+        cluster_points = points[kmeans_labels == i]
+        plt.scatter(cluster_points[:,0], cluster_points[:,1], 
+                   color=colors[i % len(colors)], alpha=0.3, s=5)
+    
+    plt.scatter(centroids[:,0], centroids[:,1], c='black', s=50, 
+               marker='x', linewidths=1.5, label='Centroides')
+    plt.title('1. Agrupamento K-Means dos Pontos Originais')
+    plt.xlabel('Coordenada X')
+    plt.ylabel('Coordenada Y')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    # ==============================================
+    # 2. Segmentação dos centroides
+    # ==============================================
+    plt.subplot(2, 2, 2)
+    
+    # Mostra a ordem de conexão dos centroides
+    mean_point = np.mean(centroids, axis=0)
+    angles = np.arctan2(centroids[:,1]-mean_point[1], centroids[:,0]-mean_point[0])
+    sorted_idx = np.argsort(angles)
+    plt.plot(centroids[sorted_idx,0], centroids[sorted_idx,1], 
+            'k--', alpha=0.3, label='Ordem de conexão')
+    
+    # Centroides coloridos por segmento
+    for i, seg_idx in enumerate(segment_indices):
+        seg_centroids = centroids[seg_idx]
+        plt.scatter(seg_centroids[:,0], seg_centroids[:,1], 
+                   color=colors[i % len(colors)], s=60,
+                   label=f'Segmento {i+1} (n={len(seg_idx)})')
         
-        # Plot 1: Pontos originais e clusters
-        plt.subplot(2, 2, 1)
-        plt.scatter(points[:,0], points[:,1], c='gray', alpha=0.1, s=5, label='Pontos originais')
-        plt.scatter(centroids[:,0], centroids[:,1], c='red', s=30, label='Centroides K-Means')
-        plt.title('Agrupamento Inicial')
-        plt.legend()
+        # Conecta os centroides do segmento
+        plt.plot(seg_centroids[:,0], seg_centroids[:,1], 
+                color=colors[i % len(colors)], linestyle=':', alpha=0.5)
+    
+    plt.title('2. Segmentação dos Centroides')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    
+    # ==============================================
+    # 3. Processo de Interpolação por Segmento
+    # ==============================================
+    plt.subplot(2, 2, 3)
+    
+    # Para cada segmento, mostra a spline e os pontos de controle
+    for i, seg_idx in enumerate(segment_indices):
+        seg_centroids = centroids[seg_idx]
         
-        # Plot 2: Segmentação dos centroides
-        plt.subplot(2, 2, 2)
-        for i, seg_idx in enumerate(segment_indices):
-            seg_centroids = centroids[seg_idx]
-            plt.scatter(seg_centroids[:,0], seg_centroids[:,1], 
-                       color=colors[i % len(colors)], 
-                       label=f'Segmento {i+1}')
-        plt.title('Centroides Segmentados')
-        plt.legend()
-        
-        # Plot 3: Trajetória final interpolada
-        plt.subplot(2, 2, 3)
-        plt.scatter(points[:,0], points[:,1], c='gray', alpha=0.05, s=5)
-        
-        # Plota cada segmento com cor diferente
-        n_total = len(x_interp)
-        n_segments = len(segment_indices)
-        seg_length = n_total // n_segments
-        
-        for i in range(n_segments):
+        if len(seg_centroids) >= 3:  # Segmentos interpolados
+            # Mostra os centroides do segmento
+            plt.scatter(seg_centroids[:,0], seg_centroids[:,1],
+                       color=colors[i % len(colors)], s=40, alpha=0.7)
+            
+            # Mostra a spline interpolada
+            seg_length = len(x_interp) // len(segment_indices)
             start = i * seg_length
-            end = (i+1) * seg_length if i < n_segments-1 else n_total
-            plt.plot(x_interp[start:end], y_interp[start:end], 
-                    color=colors[i % len(colors)], 
-                    linewidth=2, label=f'Segmento {i+1}')
-        
-        plt.title('Trajetória Final Interpolada')
-        plt.legend()
-        
-        # Plot 4: Todos os elementos juntos
-        plt.subplot(2, 2, 4)
-        plt.scatter(points[:,0], points[:,1], c='gray', alpha=0.02, s=5)
-        
-        # Centroides coloridos por segmento
-        for i, seg_idx in enumerate(segment_indices):
-            seg_centroids = centroids[seg_idx]
-            plt.scatter(seg_centroids[:,0], seg_centroids[:,1], 
-                       color=colors[i % len(colors)], s=30)
-        
-        # Trajetória final
-        plt.plot(x_interp, y_interp, 'k-', linewidth=1.5, alpha=0.7)
-        
-        plt.title('Visão Geral')
-        
-        plt.tight_layout()
+            end = (i+1) * seg_length if i < len(segment_indices)-1 else len(x_interp)
+            
+            plt.plot(x_interp[start:end], y_interp[start:end],
+                    color=colors[i % len(colors)], linewidth=3,
+                    label=f'Spline Segmento {i+1}')
+            
+            # Mostra pontos de controle da spline
+            tck, _ = splprep([seg_centroids[:,0], seg_centroids[:,1]], k=2, s=0)
+            plt.plot(tck[0][0], tck[0][1], 'o', 
+                    color=colors[i % len(colors)], markersize=8, alpha=0.7)
+        else:  # Segmentos pequenos (linha reta)
+            plt.plot(seg_centroids[:,0], seg_centroids[:,1],
+                    color=colors[i % len(colors)], linewidth=2,
+                    linestyle='--', label=f'Linha Segmento {i+1}')
+    
+    plt.title('3. Interpolação por Spline em Cada Segmento')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    
+    # ==============================================
+    # 4. Caminho Médio Final Integrado
+    # ==============================================
+    plt.subplot(2, 2, 4)
+    
+    # Pontos originais de fundo
+    plt.scatter(points[:,0], points[:,1], c='gray', alpha=0.02, s=5)
+    
+    # Caminho final interpolado
+    plt.plot(x_interp, y_interp, 'k-', linewidth=3, alpha=0.9, label='Caminho Médio Final')
+    
+    # Marca o início e fim
+    plt.scatter(x_interp[0], y_interp[0], c='green', s=150, 
+               marker='o', edgecolor='black', label='Início')
+    plt.scatter(x_interp[-1], y_interp[-1], c='red', s=150, 
+               marker='s', edgecolor='black', label='Fim')
+    
+    # Destaque os pontos de junção entre segmentos
+    seg_length = len(x_interp) // len(segment_indices)
+    for i in range(1, len(segment_indices)):
+        junction_idx = i * seg_length
+        if junction_idx < len(x_interp):
+            plt.scatter(x_interp[junction_idx], y_interp[junction_idx],
+                      c='blue', s=100, marker='D', alpha=0.7,
+                      label=f'Junção {i}' if i == 1 else "")
+    
+    plt.title('4. Caminho Médio Final Integrado')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    
+    # Ajustes finais
+    plt.tight_layout()
+    
+    if plot_dir:
         os.makedirs(plot_dir, exist_ok=True)
-        plt.savefig(f"{plot_dir}/segmented_path.png", dpi=300)
+        plt.savefig(f"{plot_dir}/spline_interpolation_process.png", 
+                   dpi=300, bbox_inches='tight')
         plt.close()
-        
-    except Exception as e:
-        print(f"Erro ao gerar gráficos: {str(e)}")
+        print(f"Visualização salva em {plot_dir}/spline_interpolation_process.png")
+    else:
+        plt.show()
 
 def plot_individual_routes(data_dir, output_dir):
     """
@@ -454,7 +526,7 @@ def main():
 
     # Calcular o Caminho mediano
     globalpos_data = load_all_globalpos(input_path)
-    median_path = calculate_median_path(globalpos_data, plot_dir=os.path.join(output_dir, "caminho_mediano"), n_clusters=100, n_segments=10)
+    median_path = calculate_median_path(globalpos_data, plot_dir=os.path.join(output_dir, "caminho_mediano"), n_clusters=40, k=2, n_segments=20)
 
     # Salvar o Caminho mediano para uso no pré-processamento
     np.save(os.path.join(output_dir, "caminho_mediano") + '/caminho_mediano.npy', median_path)
