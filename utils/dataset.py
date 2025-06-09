@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import math
 from sklearn.cluster import KMeans
+from sklearn.linear_model import LinearRegression
 from scipy.interpolate import splprep, splev, make_interp_spline
 from pathlib import Path
 
@@ -207,231 +208,138 @@ def load_all_globalpos(data_dir):
     
     return all_data_arrays
 
-def calculate_median_path(all_data_arrays, plot_dir=None, k=2, n_clusters=100, n_segments=5):
-    """Calcula caminho mediano dividindo em segmentos e interpolando cada um separadamente."""
+def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
+    """Calcula o caminho médio como um conjunto de retas por cluster."""
     # Concatena e processa os dados
     all_data = np.concatenate(all_data_arrays)
     points = np.array([[item['x'], item['y']] for item in all_data])
-    thetas = np.array([item['theta'] for item in all_data])
     
-    # 1. Clusterização inicial com K-Means
+    # Clusterização com K-Means
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     kmeans.fit(points)
     centroids = kmeans.cluster_centers_
+    labels = kmeans.labels_
     
-    # 2. Divisão dos centroides em segmentos
-    # Ordena os centroides por ângulo polar em relação ao centroide médio
-    mean_point = centroids.mean(axis=0)
-    angles = np.arctan2(centroids[:,1]-mean_point[1], centroids[:,0]-mean_point[0])
-    sorted_indices = np.argsort(angles)
-    sorted_centroids = centroids[sorted_indices]
-    
-    # Divide em n_segments partes aproximadamente iguais
-    segment_indices = np.array_split(sorted_indices, n_segments)
-    
-    # 3. Processa cada segmento separadamente
-    all_x_interp = []
-    all_y_interp = []
-    all_theta_interp = []
-    segment_labels = []  # Para armazenar os rótulos de segmento
-    
-    for seg_num, segment_idx in enumerate(segment_indices):
-        segment_centroids = centroids[segment_idx]
-        
-        # Tratamento para segmentos pequenos (inalterado)
-        if len(segment_centroids) < 3:
-            all_x_interp.extend(segment_centroids[:,0])
-            all_y_interp.extend(segment_centroids[:,1])
-            if len(segment_centroids) > 1:
-                theta = np.arctan2(segment_centroids[-1,1]-segment_centroids[0,1],
-                                  segment_centroids[-1,0]-segment_centroids[0,0])
-                all_theta_interp.extend([theta]*len(segment_centroids))
-            else:
-                all_theta_interp.extend([0]*len(segment_centroids))
-            segment_labels.extend([seg_num]*len(segment_centroids))
+    # Para cada cluster, ajusta uma reta aos seus pontos
+    lines_params = []
+    for i in range(n_clusters):
+        cluster_points = points[labels == i]
+        if len(cluster_points) < 2:  # Ignora clusters pequenos
+            lines_params.append({'slope': 0, 'intercept': centroids[i][1], 'theta': 0, 'x_range': [centroids[i][0]], 'y_range': [centroids[i][1]]})
             continue
-            
-        # Parametrização por distância acumulada (inalterado)
-        diffs = np.diff(segment_centroids, axis=0)
-        dists = np.sqrt((diffs**2).sum(axis=1))
-        t = np.concatenate([[0], np.cumsum(dists)])
         
-        # Garante que o parâmetro k seja válido
-        effective_k = min(k, len(segment_centroids)-1)
+        # Regressão linear (reta: y = slope * x + intercept)
+        reg = LinearRegression().fit(cluster_points[:, 0].reshape(-1, 1), cluster_points[:, 1])
+        slope = reg.coef_[0]
+        intercept = reg.intercept_
+        theta = np.arctan2(slope, 1)  # Ângulo da reta
         
-        # Cria splines separadas para x e y
-        spline_x = make_interp_spline(t, segment_centroids[:,0], k=effective_k)
-        spline_y = make_interp_spline(t, segment_centroids[:,1], k=effective_k)
+        # Limites do segmento (min/max de x no cluster)
+        x_min, x_max = np.min(cluster_points[:, 0]), np.max(cluster_points[:, 0])
+        x_range = np.linspace(x_min, x_max, 2)
+        y_range = slope * x_range + intercept
         
-        # Gera pontos interpolados
-        n_points = max(50, len(segment_centroids)*2)
-        t_new = np.linspace(0, t[-1], n_points)
-        
-        x_interp = spline_x(t_new)
-        y_interp = spline_y(t_new)
-        
-        # Calcula derivadas para orientação
-        dx = spline_x(t_new, 1)  # 1ª derivada
-        dy = spline_y(t_new, 1)
-        theta_interp = np.arctan2(dy, dx)
-        
-        all_x_interp.extend(x_interp)
-        all_y_interp.extend(y_interp)
-        all_theta_interp.extend(theta_interp)
-        segment_labels.extend([seg_num]*len(x_interp))
+        lines_params.append({
+            'slope': slope,
+            'intercept': intercept,
+            'theta': theta,
+            'x_range': x_range,
+            'y_range': y_range,
+            'centroid': centroids[i]
+        })
     
-    # 4. Combina todos os segmentos
-    combined_path = [{
-        'x': all_x_interp[i],
-        'y': all_y_interp[i],
-        'theta': all_theta_interp[i],
-        'relative_timestamp': float(i)/len(all_x_interp),
-        'n_points': len(points),
-        'segment': segment_labels[i]  # Usa os rótulos pré-calculados
-    } for i in range(len(all_x_interp))]
-
     if plot_dir:
-        plot_spline_interpolation_process(points, centroids, segment_indices, 
-                                   all_x_interp, all_y_interp, plot_dir)
+        plot_cluster_lines_process(points, centroids, lines_params, plot_dir)
+    
+    return centroids, lines_params
 
-    return combined_path
 
-def plot_spline_interpolation_process(points, centroids, segment_indices, x_interp, y_interp, plot_dir=None):
+def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None):
     """
-    Visualiza o processo completo de interpolação por splines.
-    
-    Args:
-        points: Array de pontos originais (Nx2)
-        centroids: Centroides obtidos pelo K-Means (Kx2)
-        segment_indices: Lista de arrays com índices dos centroides por segmento
-        x_interp, y_interp: Pontos interpolados do caminho final
-        plot_dir: Diretório para salvar os gráficos (None para mostrar na tela)
+    Visualização com:
+    - Clusters coloridos (pontos)
+    - Retas interpoladas em cor contrastante (vermelho)
+    - Setas indicando direção
     """
-    plt.figure(figsize=(20, 15))
-    colors = plt.cm.tab20.colors  # Paleta de cores para os segmentos
+    plt.figure(figsize=(20, 10))
     
+    # 1. Configuração de cores
+    cluster_colors = plt.cm.rainbow(np.linspace(0, 1, len(centroids)))  # Cores para clusters
+    line_color = 'red'  # Cor fixa para todas as retas
     
-    # 1. Visualização dos clusters originais
-    plt.subplot(2, 2, 1)
-    
-    # Pontos originais coloridos por cluster (aproximado)
+    # 2. Plot dos pontos originais e centróides (subplot esquerdo)
+    plt.subplot(1, 2, 1)
     kmeans_labels = np.argmin(np.linalg.norm(points[:, np.newaxis] - centroids, axis=2), axis=1)
+    
     for i in range(len(centroids)):
         cluster_points = points[kmeans_labels == i]
-        plt.scatter(cluster_points[:,0], cluster_points[:,1], 
-                   color=colors[i % len(colors)], alpha=0.3, s=5)
+        plt.scatter(cluster_points[:, 0], cluster_points[:, 1], 
+                   color=cluster_colors[i], alpha=0.3, s=5, label=f'Cluster {i+1}')
     
-    plt.scatter(centroids[:,0], centroids[:,1], c='black', s=50, 
-               marker='x', linewidths=1.5, label='Centroides')
-    plt.title('1. Agrupamento K-Means dos Pontos Originais')
-    plt.xlabel('Coordenada X')
-    plt.ylabel('Coordenada Y')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    
-    
-    # 2. Segmentação dos centroides
-    plt.subplot(2, 2, 2)
-    
-    # Mostra a ordem de conexão dos centroides
-    mean_point = np.mean(centroids, axis=0)
-    angles = np.arctan2(centroids[:,1]-mean_point[1], centroids[:,0]-mean_point[0])
-    sorted_idx = np.argsort(angles)
-    plt.plot(centroids[sorted_idx,0], centroids[sorted_idx,1], 
-            'k--', alpha=0.3, label='Ordem de conexão')
-    
-    # Centroides coloridos por segmento
-    for i, seg_idx in enumerate(segment_indices):
-        seg_centroids = centroids[seg_idx]
-        plt.scatter(seg_centroids[:,0], seg_centroids[:,1], 
-                   color=colors[i % len(colors)], s=60,
-                   label=f'Segmento {i+1} (n={len(seg_idx)})')
-        
-        # Conecta os centroides do segmento
-        plt.plot(seg_centroids[:,0], seg_centroids[:,1], 
-                color=colors[i % len(colors)], linestyle=':', alpha=0.5)
-    
-    plt.title('2. Segmentação dos Centroides')
+    plt.scatter(centroids[:, 0], centroids[:, 1], c='black', marker='x', s=50)
+    plt.title('Pontos Originais e Centróides')
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.grid(True, alpha=0.3)
     
+    # 3. Plot das retas interpoladas (subplot direito)
+    plt.subplot(1, 2, 2)
     
-    # 3. Processo de Interpolação por Segmento
-    plt.subplot(2, 2, 3)
+    # Primeiro plota todos os clusters (fundo)
+    for i in range(len(centroids)):
+        cluster_points = points[kmeans_labels == i]
+        plt.scatter(cluster_points[:, 0], cluster_points[:, 1],
+                   color=cluster_colors[i], alpha=0.2, s=5)
     
-    # Rastreia o índice atual em x_interp/y_interp
-    current_idx = 0
-    
-    for i, seg_idx in enumerate(segment_indices):
-        seg_centroids = centroids[seg_idx]
+    # Depois plota as retas interpoladas (destaque)
+    for i, line in enumerate(lines_params):
+        # Linha interpolada (vermelha)
+        plt.plot(line['x_range'], line['y_range'], 
+                color=line_color, linewidth=2.5, 
+                label='Reta Interpolada' if i == 0 else "")
         
-        if len(seg_centroids) >= 3:
-            # Calcula o número de pontos interpolados para este segmento
-            n_points_segment = max(50, len(seg_centroids) * 2)
-            
-            # Obtém os pontos interpolados deste segmento
-            x_segment = x_interp[current_idx : current_idx + n_points_segment]
-            y_segment = y_interp[current_idx : current_idx + n_points_segment]
-            
-            # Atualiza o índice para o próximo segmento
-            current_idx += n_points_segment
-            
-            # Plot da spline interpolada com cor única
-            plt.plot(x_segment, y_segment,
-                    color=colors[i % len(colors)], linewidth=3,
-                    label=f'Segmento {i+1}')
-        
-        else:  # Segmentos pequenos (linha reta)
-            plt.plot(seg_centroids[:, 0], seg_centroids[:, 1],
-                    color=colors[i % len(colors)], linewidth=2,
-                    linestyle='--', label=f'Segmento {i+1} (reta)')
+        # Seta indicando direção (preta)
+        dx = np.cos(line['theta']) * 0.5
+        dy = np.sin(line['theta']) * 0.5
+        plt.arrow(line['centroid'][0], line['centroid'][1], dx, dy,
+                 head_width=0.3, color='black')
     
-    plt.title('3. Splines Individuais por Segmento')
-    plt.xlabel('Coordenada X')
-    plt.ylabel('Coordenada Y')
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.title('Caminho Médio: Retas Interpoladas (Vermelho) vs Clusters')
     plt.grid(True, alpha=0.3)
     
+    # Configura legenda única para evitar repetição
+    handles, labels = plt.gca().get_legend_handles_labels()
+    plt.legend(handles[:1], labels[:1], bbox_to_anchor=(1.05, 1), loc='upper left')
     
-    # 4. Caminho Médio Final Integrado
-    plt.subplot(2, 2, 4)
-    
-    # Pontos originais de fundo
-    plt.scatter(points[:,0], points[:,1], c='gray', alpha=0.02, s=5)
-    
-    # Caminho final interpolado
-    plt.plot(x_interp, y_interp, 'k-', linewidth=3, alpha=0.9, label='Caminho Médio Final')
-    
-    # Marca o início e fim
-    plt.scatter(x_interp[0], y_interp[0], c='green', s=150, 
-               marker='o', edgecolor='black', label='Início')
-    plt.scatter(x_interp[-1], y_interp[-1], c='red', s=150, 
-               marker='s', edgecolor='black', label='Fim')
-    
-    # Destaque os pontos de junção entre segmentos
-    seg_length = len(x_interp) // len(segment_indices)
-    for i in range(1, len(segment_indices)):
-        junction_idx = i * seg_length
-        if junction_idx < len(x_interp):
-            plt.scatter(x_interp[junction_idx], y_interp[junction_idx],
-                      c='blue', s=100, marker='D', alpha=0.7,
-                      label=f'Junção {i}' if i == 1 else "")
-    
-    plt.title('4. Caminho Médio Final Integrado')
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.grid(True, alpha=0.3)
-    
-    # Ajustes finais
-    plt.tight_layout()
-    
+    # Salva ou mostra a figura
     if plot_dir:
         os.makedirs(plot_dir, exist_ok=True)
-        plt.savefig(f"{plot_dir}/spline_interpolation_process.png", 
-                   dpi=300, bbox_inches='tight')
+        plt.savefig(f"{plot_dir}/cluster_lines_path.png", dpi=300, bbox_inches='tight')
         plt.close()
-        print(f"Visualização salva em {plot_dir}/spline_interpolation_process.png")
     else:
         plt.show()
+
+
+def plot_individual_routes(data_dir, output_dir):
+    """Gera gráficos individuais para cada arquivo globalpos (mantido igual)"""
+    files = sorted(Path(data_dir).glob('globalpos_*.txt'))
+    if not files:
+        print("Nenhum arquivo globalpos_*.txt encontrado.")
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+    for filepath in files:
+        points = read_globalpos_file(filepath)
+        plt.figure(figsize=(10, 8))
+        plt.plot(points['x'], points['y'], 'b-', linewidth=1, label='Trajetória')
+        plt.scatter(points['x'][0], points['y'][0], c='green', s=100, label='Início')
+        plt.scatter(points['x'][-1], points['y'][-1], c='red', s=100, label='Fim')
+        plt.title(f'Rota: {filepath.name}')
+        plt.xlabel('X')
+        plt.ylabel('Y')
+        plt.legend()
+        plt.grid(True)
+        plt.axis('equal')
+        plt.savefig(os.path.join(output_dir, f'{filepath.stem}.png'), dpi=150)
+        plt.close()
 
 def plot_individual_routes(data_dir, output_dir):
     """
@@ -534,10 +442,19 @@ def main():
 
     # Calcular o Caminho mediano
     globalpos_data = load_all_globalpos(input_path)
-    median_path = calculate_median_path(globalpos_data, plot_dir=os.path.join(output_dir, "caminho_mediano"), n_clusters=66, k=2, n_segments=22)
+    #Alterar: Utilizar os pontos de cada cluster para a interpolação ao invés dos centróides
+    centroids, lines_params = calculate_median_path(globalpos_data, n_clusters=30)
+
+    # Geração do plot
+    plot_cluster_lines_process(
+        points=np.vstack([np.array([[item['x'], item['y']] for data in globalpos_data for item in data])]),
+        centroids=centroids,
+        lines_params=lines_params,
+        plot_dir=os.path.join(output_dir, "caminho_mediano")
+    )
 
     # Salvar o Caminho mediano para uso no pré-processamento
-    np.save(os.path.join(output_dir, "caminho_mediano") + '/caminho_mediano.npy', median_path)
+    np.save(os.path.join(output_dir, "caminho_mediano") + '/caminho_mediano.npy', centroids, lines_params)
 
     return
 

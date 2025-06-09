@@ -156,10 +156,6 @@ def calculate_distances(sampled_data, median_path):
         point = np.array([item['globalpos'][0], item['globalpos'][1]])  # x, y
         theta = item['globalpos'][2]  # theta
         
-        #Nota: A associação entre os pontos do caminho mediano e os pontos da posição global da pointcloud esta sendo feita
-        #por meio dos valores numéricos das coordenadas x e y, isso deve ser corrigido, para que a associação seja feita 
-        #levando em conta o timestamp e a angulação theta do veículo, para garantir int egridade dos dados
-        
         # Encontra os 2 pontos mais próximos
         _, indices = tree.query(point, k=2)
         closest_indices = sorted(indices)
