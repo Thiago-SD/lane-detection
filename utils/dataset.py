@@ -261,11 +261,11 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None):
     - Retas interpoladas em cor contrastante (vermelho)
     - Setas indicando direção
     """
-    plt.figure(figsize=(20, 10))
+    plt.figure(figsize=(30, 15))
     
     # 1. Configuração de cores
     cluster_colors = plt.cm.rainbow(np.linspace(0, 1, len(centroids)))  # Cores para clusters
-    line_color = 'red'  # Cor fixa para todas as retas
+    line_color = 'black'  # Cor fixa para todas as retas
     
     # 2. Plot dos pontos originais e centróides (subplot esquerdo)
     plt.subplot(1, 2, 1)
@@ -278,7 +278,6 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None):
     
     plt.scatter(centroids[:, 0], centroids[:, 1], c='black', marker='x', s=50)
     plt.title('Pontos Originais e Centróides')
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     
     # 3. Plot das retas interpoladas (subplot direito)
     plt.subplot(1, 2, 2)
@@ -287,7 +286,7 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None):
     for i in range(len(centroids)):
         cluster_points = points[kmeans_labels == i]
         plt.scatter(cluster_points[:, 0], cluster_points[:, 1],
-                   color=cluster_colors[i], alpha=0.2, s=5)
+                   color=cluster_colors[i], alpha=0.3, s=5)
     
     # Depois plota as retas interpoladas (destaque)
     for i, line in enumerate(lines_params):
@@ -443,7 +442,7 @@ def main():
     # Calcular o Caminho mediano
     globalpos_data = load_all_globalpos(input_path)
     #Alterar: Utilizar os pontos de cada cluster para a interpolação ao invés dos centróides
-    centroids, lines_params = calculate_median_path(globalpos_data, n_clusters=30)
+    centroids, lines_params = calculate_median_path(globalpos_data, n_clusters=40)
 
     # Geração do plot
     plot_cluster_lines_process(
