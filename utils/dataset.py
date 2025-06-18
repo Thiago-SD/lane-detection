@@ -209,7 +209,7 @@ def load_all_globalpos(data_dir):
     return all_data_arrays
 
 def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
-    """Calcula o caminho médio como um conjunto de retas por cluster."""
+    """Calcula o caminho médio usando splines lineares paramétricas por cluster."""
     # Concatena e processa os dados
     all_data = np.concatenate(all_data_arrays)
     points = np.array([[item['x'], item['y']] for item in all_data])
@@ -220,32 +220,51 @@ def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
     centroids = kmeans.cluster_centers_
     labels = kmeans.labels_
     
-    # Para cada cluster, ajusta uma reta aos seus pontos
+    # Para cada cluster, ajusta uma spline linear paramétrica
     lines_params = []
     for i in range(n_clusters):
         cluster_points = points[labels == i]
-        if len(cluster_points) < 2:  # Ignora clusters pequenos
-            lines_params.append({'slope': 0, 'intercept': centroids[i][1], 'theta': 0, 'x_range': [centroids[i][0]], 'y_range': [centroids[i][1]]})
+        
+        if len(cluster_points) < 2:
+            # Caso degenerado (apenas 1 ponto)
+            lines_params.append({
+                'type': 'point',
+                'centroid': centroids[i],
+                'point': cluster_points[0] if len(cluster_points) == 1 else centroids[i]
+            })
             continue
         
-        # Regressão linear (reta: y = slope * x + intercept)
-        reg = LinearRegression().fit(cluster_points[:, 0].reshape(-1, 1), cluster_points[:, 1])
-        slope = reg.coef_[0]
-        intercept = reg.intercept_
-        theta = np.arctan2(slope, 1)  # Ângulo da reta
+        # Fallback para regressão linear se a spline falhar
+        # Agora testamos tanto y=f(x) quanto x=f(y)
+        dx = np.ptp(cluster_points[:, 0])
+        dy = np.ptp(cluster_points[:, 1])
         
-        # Limites do segmento (min/max de x no cluster)
-        x_min, x_max = np.min(cluster_points[:, 0]), np.max(cluster_points[:, 0])
-        x_range = np.linspace(x_min, x_max, 2)
-        y_range = slope * x_range + intercept
+        if dx > dy:  # Melhor ajustar y = f(x)
+            reg = LinearRegression().fit(cluster_points[:, 0].reshape(-1, 1), cluster_points[:, 1])
+            slope = reg.coef_[0]
+            intercept = reg.intercept_
+            x_range = np.linspace(np.min(cluster_points[:, 0]), np.max(cluster_points[:, 0]), 2)
+            y_range = slope * x_range + intercept
+            representation = 'y=f(x)'
+        else:  # Melhor ajustar x = f(y)
+            reg = LinearRegression().fit(cluster_points[:, 1].reshape(-1, 1), cluster_points[:, 0])
+            slope = reg.coef_[0]
+            intercept = reg.intercept_
+            y_range = np.linspace(np.min(cluster_points[:, 1]), np.max(cluster_points[:, 1]), 2)
+            x_range = slope * y_range + intercept
+            representation = 'x=f(y)'
+        
+        theta = np.arctan2(np.ptp(cluster_points[:, 1]), np.ptp(cluster_points[:, 0]))
         
         lines_params.append({
-            'slope': slope,
-            'intercept': intercept,
-            'theta': theta,
+            'type': 'line',
+            'representation': representation,
+            'params': (slope, intercept),
             'x_range': x_range,
             'y_range': y_range,
-            'centroid': centroids[i]
+            'theta': theta,
+            'centroid': centroids[i],
+            'n_points': len(cluster_points)
         })
     
     if plot_dir:
@@ -256,18 +275,17 @@ def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
 
 def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None):
     """
-    Visualização com:
+    Visualização que lida corretamente com segmentos verticais.
     - Clusters coloridos (pontos)
-    - Retas interpoladas em cor contrastante (vermelho)
-    - Setas indicando direção
+    - Splines/Retas em preto (incluindo verticais)
     """
     plt.figure(figsize=(30, 15))
     
-    # 1. Configuração de cores
-    cluster_colors = plt.cm.rainbow(np.linspace(0, 1, len(centroids)))  # Cores para clusters
-    line_color = 'black'  # Cor fixa para todas as retas
+    # Configuração de cores
+    cluster_colors = plt.cm.rainbow(np.linspace(0, 1, len(centroids)))
+    line_color = 'black'
     
-    # 2. Plot dos pontos originais e centróides (subplot esquerdo)
+    # Subplot 1: Pontos originais e centróides
     plt.subplot(1, 2, 1)
     kmeans_labels = np.argmin(np.linalg.norm(points[:, np.newaxis] - centroids, axis=2), axis=1)
     
@@ -276,45 +294,50 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None):
         plt.scatter(cluster_points[:, 0], cluster_points[:, 1], 
                    color=cluster_colors[i], alpha=0.3, s=5, label=f'Cluster {i+1}')
     
-    plt.scatter(centroids[:, 0], centroids[:, 1], c='black', marker='x', s=50)
+    plt.scatter(centroids[:, 0], centroids[:, 1], c='black', marker='X', s=50)
     plt.title('Pontos Originais e Centróides')
     
-    # 3. Plot das retas interpoladas (subplot direito)
+    # Subplot 2: Splines/Retas por cluster (incluindo verticais)
     plt.subplot(1, 2, 2)
     
-    # Primeiro plota todos os clusters (fundo)
+    # Pontos dos clusters (fundo)
     for i in range(len(centroids)):
         cluster_points = points[kmeans_labels == i]
         plt.scatter(cluster_points[:, 0], cluster_points[:, 1],
                    color=cluster_colors[i], alpha=0.3, s=5)
     
-    # Depois plota as retas interpoladas (destaque)
+    # Plot das linhas
     for i, line in enumerate(lines_params):
-        # Linha interpolada (vermelha)
-        plt.plot(line['x_range'], line['y_range'], 
-                color=line_color, linewidth=2.5, 
-                label='Reta Interpolada' if i == 0 else "")
-        
-        # Seta indicando direção (preta)
-        dx = np.cos(line['theta']) * 0.5
-        dy = np.sin(line['theta']) * 0.5
-        plt.arrow(line['centroid'][0], line['centroid'][1], dx, dy,
-                 head_width=0.3, color='black')
+        if line['type'] == 'spline':
+            # Spline paramétrica - funciona para qualquer orientação
+            u_vals = np.linspace(line['u_range'][0], line['u_range'][1], 20)
+            x, y = splev(u_vals, line['tck'])
+            plt.plot(x, y, color=line_color, linewidth=2.5)
+            
+        elif line['type'] == 'line':
+            # Linha reta - tratamento especial para verticais
+            if line['representation'] == 'y=f(x)':
+                plt.plot(line['x_range'], line['y_range'], 
+                        color=line_color, linewidth=2.5)
+            else:  # x=f(y)
+                plt.plot(line['x_range'], line['y_range'],
+                        color=line_color, linewidth=2.5)
+                
+        elif line['type'] == 'point':
+            plt.scatter(line['point'][0], line['point'][1], 
+                       color=line_color, s=50, marker='s')
     
-    plt.title('Caminho Médio: Retas Interpoladas (Vermelho) vs Clusters')
+    plt.scatter(centroids[:, 0], centroids[:, 1], c='black', marker='X', s=50)
+    plt.title('Caminho Médio: Segmentos por Cluster (Verticais e Horizontais)')
     plt.grid(True, alpha=0.3)
     
-    # Configura legenda única para evitar repetição
-    handles, labels = plt.gca().get_legend_handles_labels()
-    plt.legend(handles[:1], labels[:1], bbox_to_anchor=(1.05, 1), loc='upper left')
-    
-    # Salva ou mostra a figura
     if plot_dir:
         os.makedirs(plot_dir, exist_ok=True)
         plt.savefig(f"{plot_dir}/cluster_lines_path.png", dpi=300, bbox_inches='tight')
         plt.close()
     else:
         plt.show()
+
 
 
 def plot_individual_routes(data_dir, output_dir):
@@ -442,7 +465,7 @@ def main():
     # Calcular o Caminho mediano
     globalpos_data = load_all_globalpos(input_path)
     #Alterar: Utilizar os pontos de cada cluster para a interpolação ao invés dos centróides
-    centroids, lines_params = calculate_median_path(globalpos_data, n_clusters=40)
+    centroids, lines_params = calculate_median_path(globalpos_data, n_clusters=80)
 
     # Geração do plot
     plot_cluster_lines_process(
@@ -453,7 +476,7 @@ def main():
     )
 
     # Salvar o Caminho mediano para uso no pré-processamento
-    np.save(os.path.join(output_dir, "caminho_mediano") + '/caminho_mediano.npy', centroids, lines_params)
+    np.savez(os.path.join(output_dir, "caminho_mediano") + '/caminho_mediano.npz', centroids = centroids, lines_params = lines_params)
 
     return
 

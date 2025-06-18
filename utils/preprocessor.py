@@ -2,6 +2,8 @@ import numpy as np
 import os
 from scipy.spatial import KDTree
 from scipy.signal import savgol_filter
+from scipy.optimize import minimize_scalar
+from scipy.interpolate import splev
 from collections import defaultdict
 
 # Constantes
@@ -144,56 +146,80 @@ def sample_pointclouds(data_dir):
     return sampled_data
 
 def calculate_distances(sampled_data, median_path):
-    """Calcula distâncias até o caminho mediano considerando theta"""
-    print("\nCalculando distâncias...")
+    """
+    Calcula distâncias usando projeção ortogonal nas retas associadas aos centróides mais próximos.
     
-    # Prepara KDTree com posições do caminho mediano
-    median_coords = np.array([[p['x'], p['y']] for p in median_path])
-    tree = KDTree(median_coords)
+    Args:
+        sampled_data: Lista de pontos com ['globalpos'] = [x, y, theta]
+        median_path: Dicionário com:
+            - 'centroids': Array de centróides
+            - 'lines': Lista de parâmetros das retas por segmento
+    
+    Returns:
+        sampled_data com campo 'distance' adicionado (distância assinada)
+    """
+    print("\nCalculando distâncias usando projeção ortogonal nas retas dos centróides...")
+    
+    centroids = median_path['centroids']
+    lines_params = median_path['lines_params']
     
     for item in sampled_data:
-        # Acessa as coordenadas diretamente do item (estrutura fixa)
-        point = np.array([item['globalpos'][0], item['globalpos'][1]])  # x, y
-        theta = item['globalpos'][2]  # theta
+        point = np.array([item['globalpos'][0], item['globalpos'][1]])
+        theta_vehicle = item['globalpos'][2]
         
-        # Encontra os 2 pontos mais próximos
-        _, indices = tree.query(point, k=2)
-        closest_indices = sorted(indices)
+        # 1. Encontra o centróide mais próximo (busca linear simples)
+        distances_to_centroids = np.linalg.norm(centroids - point, axis=1)
+        nearest_idx = np.argmin(distances_to_centroids)
+        nearest_centroid = centroids[nearest_idx]
+        line = lines_params[nearest_idx]
+        if line['type'] == 'line':
+            # Para retas, projeção ortogonal
+            if line['representation'] == 'y=f(x)':
+                # Reta y = slope*x + intercept
+                slope = line['params'][0]
+                intercept = line['params'][1]
+                
+                # Projeção ortogonal
+                x_proj = (point[0] + slope*(point[1] - intercept))/(1 + slope**2)
+                y_proj = slope*x_proj + intercept
+                closest_point = np.array([x_proj, y_proj])
+                
+                # Vetor diretor da reta (1, slope)
+                seg_vec = np.array([1, slope])
+            else:
+                # Reta x = slope*y + intercept
+                slope = line['params'][0]
+                intercept = line['params'][1]
+                
+                # Projeção ortogonal
+                y_proj = (point[1] + slope*(point[0] - intercept))/(1 + slope**2)
+                x_proj = slope*y_proj + intercept
+                closest_point = np.array([x_proj, y_proj])
+                
+                # Vetor diretor da reta (slope, 1)
+                seg_vec = np.array([slope, 1])
         
-        if len(closest_indices) < 2:
-            item['distance'] = 0.0
-            continue
-            
-        # Pega segmento mais próximo
-        p1 = median_path[closest_indices[0]]
-        p2 = median_path[closest_indices[1]]
+        elif line['type'] == 'point':
+            # Caso degenerado (apenas 1 ponto)
+            closest_point = np.array([line['point'][0], line['point'][1]])
+            seg_vec = np.array([1, 0])  # Arbitrário (não afeta distância)
         
-        # Vetores para cálculo
-        seg_vec = np.array([p2['x']-p1['x'], p2['y']-p1['y']])
-        point_vec = np.array([point[0]-p1['x'], point[1]-p1['y']])
+        # 3. Calcula distância com sinal
+        point_vec = point - closest_point
+        distance = np.linalg.norm(point_vec)
         
-        # Evita divisão por zero
-        seg_norm = np.dot(seg_vec, seg_vec)
-        if seg_norm < 1e-6:
-            item['distance'] = np.linalg.norm(point_vec)
-            continue
-            
-        # Projeção no segmento
-        t = np.dot(point_vec, seg_vec) / seg_norm
-        t = np.clip(t, 0, 1)
-        proj_point = p1['x'] + t*seg_vec[0], p1['y'] + t*seg_vec[1]
-        
-        # Distância com sinal (considerando orientação)
+        # Determina o lado usando produto vetorial
         cross = seg_vec[0]*point_vec[1] - seg_vec[1]*point_vec[0]
-        distance = np.linalg.norm(point - proj_point)
-        signed_dist = np.sign(cross) * distance
+        signed_distance = np.sign(cross) * distance
         
-        # Ponderação angular
-        theta_diff = min(abs(theta-p1['theta']), abs(theta-p2['theta']))
-        angular_weight = np.cos(theta_diff)
+        # 4. Ponderação pela orientação do veículo
+        seg_angle = np.arctan2(seg_vec[1], seg_vec[0])
+        angle_diff = min(abs(theta_vehicle - seg_angle), 
+                       abs(theta_vehicle - seg_angle - np.pi))
+        angular_weight = np.cos(angle_diff)
         
-        item['distance'] = signed_dist * angular_weight
-        item['path_index'] = closest_indices[0]
+        item['distance'] = signed_distance * angular_weight
+        item['path_segment'] = nearest_idx
     
     return sampled_data
 
@@ -335,8 +361,9 @@ def main():
     # Pipeline principal
     #globalpos_data = load_all_globalpos_old(data_dir)
     #median_path = calculate_median_path_old(globalpos_data)
-    median_path = np.load(os.path.join(data_dir, "caminho_mediano") + '/caminho_mediano.npy', allow_pickle=True)
-    print(f"\nArquivo {os.path.join(data_dir, "caminho_mediano") + '/caminho_mediano.npy'} contendo o Caminho Mediano lido.")
+    median_path = np.load(os.path.join(data_dir, "caminho_mediano") + '/caminho_mediano.npz', allow_pickle=True)
+    #print(median_path['lines_params'])
+    print(f"\nArquivo {os.path.join(data_dir, "caminho_mediano") + '/caminho_mediano.npz'} contendo o Caminho Mediano lido.")
     sampled_data = sample_pointclouds(data_dir)
     sampled_data = calculate_distances(sampled_data, median_path)
     save_training_data(sampled_data, output_dir)
