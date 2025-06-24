@@ -7,7 +7,6 @@ from sklearn.linear_model import LinearRegression
 from scipy.interpolate import splprep, splev, make_interp_spline
 from pathlib import Path
 
-
 # Ângulos verticais do Velodyne
 velodyne_vertical_angles = np.array([
     -30.6700000, -29.3300000, -28.0000000, -26.6700000, -25.3300000, -24.0000000, -22.6700000, -21.3300000,
@@ -106,7 +105,7 @@ def binaryTo3d(file_path):
 
                     # Armazenar o ponto no array
                     points[i * 32 + j, 0] = x
-                    points[i * 32 + j, 1] = y
+                    points[i * 32 + j, 1] = y 
                     points[i * 32 + j, 2] = z
 
     except Exception as e:
@@ -127,7 +126,7 @@ def find_nearest_timestamp(target_timestamp, timestamps):
     #print(target_timestamp)
     return np.argmin(diffs)
 
-def read_globalpos_file(globalpos_file_path):
+def read_globalpos_file(globalpos_file_path, x_offset=0.0, y_offset=0.0):
     """
     Lê o arquivo de posição global e retorna os dados como um array NumPy estruturado.
     :param globalpos_file_path: Caminho para o arquivo de posição global.
@@ -139,12 +138,12 @@ def read_globalpos_file(globalpos_file_path):
         i = 0
         while i < len(lines):
             if lines[i].strip() == "msg_begin":
-                x = float(lines[i + 1].strip())
-                y = float(lines[i + 2].strip())
+                x = float(lines[i + 1].strip()) 
+                y = float(lines[i + 2].strip()) 
                 theta = float(lines[i + 3].strip())
                 timestamp = float(lines[i + 10].strip())
-                #print(timestamp)
-                globalpos_data.append((x, y, theta, timestamp))
+                #print (f"Valor de X Original: {x}\n Valor de X com Offset: {x - x_offset}\n")
+                globalpos_data.append((x - x_offset, y - y_offset, theta, timestamp))
                 i += 10
             else:
                 i += 1
@@ -156,7 +155,7 @@ def read_globalpos_file(globalpos_file_path):
         ('timestamp', np.float64)
     ]))
 
-def load_all_globalpos(data_dir):
+def load_all_globalpos(data_dir, x_offset=0.0, y_offset=0.0):
     """Carrega todas as posições globais dos arquivos .txt de globalpos"""
     print("\nCarregando dados de posição global dos arquivos txt...")
     
@@ -173,7 +172,7 @@ def load_all_globalpos(data_dir):
         
         try:
             # Usa a função do dataset.py para ler o arquivo
-            file_data = read_globalpos_file(filepath)
+            file_data = read_globalpos_file(filepath, x_offset=x_offset, y_offset=y_offset)
             
             if len(file_data) == 0:
                 print(f"Arquivo sem dados válidos: {filename}")
@@ -273,7 +272,7 @@ def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
     return centroids, lines_params
 
 
-def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None):
+def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None,  x_offset=1000, y_offset=0.0):
     """
     Visualização que lida corretamente com segmentos verticais.
     - Clusters coloridos (pontos)
@@ -337,31 +336,6 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None):
         plt.close()
     else:
         plt.show()
-
-
-
-def plot_individual_routes(data_dir, output_dir):
-    """Gera gráficos individuais para cada arquivo globalpos (mantido igual)"""
-    files = sorted(Path(data_dir).glob('globalpos_*.txt'))
-    if not files:
-        print("Nenhum arquivo globalpos_*.txt encontrado.")
-        return
-
-    os.makedirs(output_dir, exist_ok=True)
-    for filepath in files:
-        points = read_globalpos_file(filepath)
-        plt.figure(figsize=(10, 8))
-        plt.plot(points['x'], points['y'], 'b-', linewidth=1, label='Trajetória')
-        plt.scatter(points['x'][0], points['y'][0], c='green', s=100, label='Início')
-        plt.scatter(points['x'][-1], points['y'][-1], c='red', s=100, label='Fim')
-        plt.title(f'Rota: {filepath.name}')
-        plt.xlabel('X')
-        plt.ylabel('Y')
-        plt.legend()
-        plt.grid(True)
-        plt.axis('equal')
-        plt.savefig(os.path.join(output_dir, f'{filepath.stem}.png'), dpi=150)
-        plt.close()
 
 def plot_individual_routes(data_dir, output_dir):
     """
@@ -463,8 +437,7 @@ def main():
     #return
 
     # Calcular o Caminho mediano
-    globalpos_data = load_all_globalpos(input_path)
-    #Alterar: Utilizar os pontos de cada cluster para a interpolação ao invés dos centróides
+    globalpos_data = load_all_globalpos(input_path, x_offset = 7 * 10**6)
     centroids, lines_params = calculate_median_path(globalpos_data, n_clusters=80)
 
     # Geração do plot
