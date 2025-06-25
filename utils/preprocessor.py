@@ -48,10 +48,6 @@ def load_all_globalpos_old(data_dir):
     print(f"Total de pontos carregados: {len(all_data)}")
     return all_data
 
-#Nota: Atualmente, são utilizadas apenas as globalpos armazenadas junto à pointclouds nos arquivos .npy para calcular o caminho mediano, 
-#será alterado para que todos os 20 arquivos de globalpos capturados sejam utilizados na criação do caminho mediano
-#Também serão estudadas alternativas para definir o caminho mediano, ao invés de apenas calcular a mediana de pontos no mesmo timestamp,
-#como por exemplo: utilização de centróides ou regressão linear
 def calculate_median_path_old(all_globalpos):
     """Calcula caminho mediano considerando tempo e orientação"""
     print("\n[2/4] Calculando caminho mediano...")
@@ -104,7 +100,6 @@ def smooth_path_old(path, window_size=5, polyorder=2):
 
 def sample_pointclouds(data_dir):
     """Amostra pointclouds e associa ao caminho mediano"""
-    print("\n[3/4] Amostrando pointclouds...")
     sampled_data = []
     
     for filename in sorted(os.listdir(data_dir)):
@@ -145,90 +140,73 @@ def sample_pointclouds(data_dir):
     print(f"Total de pointclouds amostradas: {len(sampled_data)}")
     return sampled_data
 
-def calculate_distances(sampled_data, median_path):
-    """
-    Calcula distâncias usando projeção ortogonal nas retas associadas aos centróides mais próximos.
-    
-    Args:
-        sampled_data: Lista de pontos com ['globalpos'] = [x, y, theta]
-        median_path: Dicionário com:
-            - 'centroids': Array de centróides
-            - 'lines': Lista de parâmetros das retas por segmento
-    
-    Returns:
-        sampled_data com campo 'distance' adicionado (distância assinada)
-    """
-    print("\nCalculando distâncias usando projeção ortogonal nas retas dos centróides...")
-    
+def calculate_distance_to_path(point, theta_vehicle, median_path):
     centroids = median_path['centroids']
     lines_params = median_path['lines_params']
     
+    # 1. Encontra o centróide mais próximo
+    distances_to_centroids = np.linalg.norm(centroids - point, axis=1)
+    nearest_idx = np.argmin(distances_to_centroids)
+    line = lines_params[nearest_idx]
+    
+    # 2. Calcula ponto mais próximo no segmento
+    if line['type'] == 'line':
+        if line['representation'] == 'y=f(x)':
+            slope, intercept = line['params']
+            # Projeção ortogonal para y = mx + b
+            x_proj = (point[0] + slope*(point[1] - intercept))/(1 + slope**2)
+            y_proj = slope*x_proj + intercept
+            closest_point = np.array([x_proj, y_proj])
+            seg_vec = np.array([1, slope])  # Vetor diretor da reta
+        else:
+            slope, intercept = line['params']
+            # Projeção ortogonal para x = my + b
+            y_proj = (point[1] + slope*(point[0] - intercept))/(1 + slope**2)
+            x_proj = slope*y_proj + intercept
+            closest_point = np.array([x_proj, y_proj])
+            seg_vec = np.array([slope, 1])  # Vetor diretor da reta
+    else:
+        # Caso degenerado (apenas 1 ponto)
+        closest_point = np.array([line['point'][0], line['point'][1]])
+        seg_vec = np.array([1, 0])  # Vetor arbitrário
+    
+    # 3. Calcula distância com sinal
+    point_vec = point - closest_point
+    distance = np.linalg.norm(point_vec)
+    cross = seg_vec[0]*point_vec[1] - seg_vec[1]*point_vec[0]
+    signed_distance = np.sign(cross) * distance
+    
+    # 4. Ponderação pela orientação do veículo
+    seg_angle = np.arctan2(seg_vec[1], seg_vec[0])
+    angle_diff = min(abs(theta_vehicle - seg_angle), 
+                   abs(theta_vehicle - seg_angle - np.pi))
+    angular_weight = np.cos(angle_diff)
+    
+    return signed_distance * angular_weight, nearest_idx
+
+def calculate_distances(sampled_data, median_path):
+    print("\nCalculando distâncias usando projeção ortogonal nas retas dos centróides...")
+    
+    point = np.array([0, 0])
+    theta_vehicle = 0.0
+    #print(median_path['centroids'])
+    print(f"Calculando distância para teste, ponto {median_path['centroids'][40]}: {calculate_distance_to_path(median_path['centroids'][40], theta_vehicle, median_path)}")
+
     for item in sampled_data:
         point = np.array([item['globalpos'][0], item['globalpos'][1]])
         theta_vehicle = item['globalpos'][2]
         
-        # 1. Encontra o centróide mais próximo (busca linear simples)
-        distances_to_centroids = np.linalg.norm(centroids - point, axis=1)
-        nearest_idx = np.argmin(distances_to_centroids)
-        nearest_centroid = centroids[nearest_idx]
-        line = lines_params[nearest_idx]
-        if line['type'] == 'line':
-            # Para retas, projeção ortogonal
-            if line['representation'] == 'y=f(x)':
-                # Reta y = slope*x + intercept
-                slope = line['params'][0]
-                intercept = line['params'][1]
-                
-                # Projeção ortogonal
-                x_proj = (point[0] + slope*(point[1] - intercept))/(1 + slope**2)
-                y_proj = slope*x_proj + intercept
-                closest_point = np.array([x_proj, y_proj])
-                
-                # Vetor diretor da reta (1, slope)
-                seg_vec = np.array([1, slope])
-            else:
-                # Reta x = slope*y + intercept
-                slope = line['params'][0]
-                intercept = line['params'][1]
-                
-                # Projeção ortogonal
-                y_proj = (point[1] + slope*(point[0] - intercept))/(1 + slope**2)
-                x_proj = slope*y_proj + intercept
-                closest_point = np.array([x_proj, y_proj])
-                
-                # Vetor diretor da reta (slope, 1)
-                seg_vec = np.array([slope, 1])
+        distance, segment = calculate_distance_to_path(point, theta_vehicle, median_path)
         
-        elif line['type'] == 'point':
-            # Caso degenerado (apenas 1 ponto)
-            closest_point = np.array([line['point'][0], line['point'][1]])
-            seg_vec = np.array([1, 0])  # Arbitrário (não afeta distância)
-        
-        # 3. Calcula distância com sinal
-        point_vec = point - closest_point
-        distance = np.linalg.norm(point_vec)
-        
-        # Determina o lado usando produto vetorial
-        cross = seg_vec[0]*point_vec[1] - seg_vec[1]*point_vec[0]
-        signed_distance = np.sign(cross) * distance
-        
-        # 4. Ponderação pela orientação do veículo
-        seg_angle = np.arctan2(seg_vec[1], seg_vec[0])
-        angle_diff = min(abs(theta_vehicle - seg_angle), 
-                       abs(theta_vehicle - seg_angle - np.pi))
-        angular_weight = np.cos(angle_diff)
-        
-        item['distance'] = signed_distance * angular_weight
-        item['path_segment'] = nearest_idx
+        item['distance'] = distance
+        item['path_segment'] = segment
     
     return sampled_data
 
 def save_training_data(sampled_data, output_dir):
     """Salva todos os dados de treinamento em um único arquivo .npz formatado"""
     os.makedirs(output_dir, exist_ok=True)
-    
-    print("\n[5/5] Consolidando e salvando dados de treinamento...")
-    
+        
     # Extrai todos os dados em arrays separados
     x = np.array([item['globalpos'][0] for item in sampled_data], dtype=np.float32)
     y = np.array([item['globalpos'][1] for item in sampled_data], dtype=np.float32)
@@ -367,7 +345,7 @@ def main():
     sampled_data = sample_pointclouds(data_dir)
     sampled_data = calculate_distances(sampled_data, median_path)
     save_training_data(sampled_data, output_dir)
-    view_training_data(output_dir + '/complete_training_data.npz')
+    #view_training_data(output_dir + '/complete_training_data.npz')
     
     print("\nProcesso concluído com sucesso!")
 

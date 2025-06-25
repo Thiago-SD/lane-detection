@@ -207,6 +207,16 @@ def load_all_globalpos(data_dir, x_offset=0.0, y_offset=0.0):
     
     return all_data_arrays
 
+def determine_side_of_line(point, line_params):
+    if line_params['representation'] == 'y=f(x)':
+        slope, intercept = line_params['params']
+        y_line = slope * point[0] + intercept
+        return np.sign(point[1] - y_line)
+    else:  # x=f(y)
+        slope, intercept = line_params['params']
+        x_line = slope * point[1] + intercept
+        return np.sign(point[0] - x_line)
+
 def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
     """Calcula o caminho médio usando splines lineares paramétricas por cluster."""
     # Concatena e processa os dados
@@ -272,7 +282,7 @@ def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
     return centroids, lines_params
 
 
-def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None,  x_offset=1000, y_offset=0.0):
+def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None):
     """
     Visualização que lida corretamente com segmentos verticais.
     - Clusters coloridos (pontos)
@@ -437,7 +447,7 @@ def main():
     #return
 
     # Calcular o Caminho mediano
-    globalpos_data = load_all_globalpos(input_path, x_offset = 7 * 10**6)
+    globalpos_data = load_all_globalpos(input_path, x_offset = 7*(10**6))
     centroids, lines_params = calculate_median_path(globalpos_data, n_clusters=80)
 
     # Geração do plot
