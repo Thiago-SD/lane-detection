@@ -207,15 +207,29 @@ def load_all_globalpos(data_dir, x_offset=0.0, y_offset=0.0):
     
     return all_data_arrays
 
-def determine_side_of_line(point, line_params):
-    if line_params['representation'] == 'y=f(x)':
-        slope, intercept = line_params['params']
-        y_line = slope * point[0] + intercept
-        return np.sign(point[1] - y_line)
-    else:  # x=f(y)
-        slope, intercept = line_params['params']
-        x_line = slope * point[1] + intercept
-        return np.sign(point[0] - x_line)
+def split_by_line(points, line_params, test_side='above'):
+    m, b = line_params
+    
+    # Para retas verticais (quando usamos x = m*y + b com m=0)
+    if m == 0:
+        x = points[:, 0]
+        if test_side == 'right':
+            test_mask = x > b
+        else:
+            test_mask = x < b
+    else:
+        # Código existente para retas não verticais
+        x = points[:, 0]
+        y = points[:, 1]
+        positions = y - (m * x + b) if abs(m) <= 1 else x - (m * y + b)
+        
+        if test_side == 'above':
+            test_mask = positions > 0
+        else:
+            test_mask = positions < 0
+    
+    train_mask = ~test_mask
+    return train_mask, test_mask
 
 def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
     """Calcula o caminho médio usando splines lineares paramétricas por cluster."""
@@ -276,73 +290,73 @@ def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
             'n_points': len(cluster_points)
         })
     
-    if plot_dir:
-        plot_cluster_lines_process(points, centroids, lines_params, plot_dir)
-    
     return centroids, lines_params
 
 
-def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None):
-    """
-    Visualização que lida corretamente com segmentos verticais.
-    - Clusters coloridos (pontos)
-    - Splines/Retas em preto (incluindo verticais)
-    """
+def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None, split_line=None):
     plt.figure(figsize=(30, 15))
     
-    # Configuração de cores
-    cluster_colors = plt.cm.rainbow(np.linspace(0, 1, len(centroids)))
+    # Cria um mapa de cores fixo para os clusters
+    n_clusters = len(centroids)
+    cluster_colors = plt.cm.gist_ncar(np.linspace(0, 1, n_clusters))
     line_color = 'black'
     
-    # Subplot 1: Pontos originais e centróides
     plt.subplot(1, 2, 1)
     kmeans_labels = np.argmin(np.linalg.norm(points[:, np.newaxis] - centroids, axis=2), axis=1)
-    
-    for i in range(len(centroids)):
-        cluster_points = points[kmeans_labels == i]
-        plt.scatter(cluster_points[:, 0], cluster_points[:, 1], 
-                   color=cluster_colors[i], alpha=0.3, s=5, label=f'Cluster {i+1}')
-    
-    plt.scatter(centroids[:, 0], centroids[:, 1], c='black', marker='X', s=50)
-    plt.title('Pontos Originais e Centróides')
-    
-    # Subplot 2: Splines/Retas por cluster (incluindo verticais)
-    plt.subplot(1, 2, 2)
-    
+
     # Pontos dos clusters (fundo)
     for i in range(len(centroids)):
         cluster_points = points[kmeans_labels == i]
         plt.scatter(cluster_points[:, 0], cluster_points[:, 1],
-                   color=cluster_colors[i], alpha=0.3, s=5)
-    
+                   color=cluster_colors[i], s=5)
+        
     # Plot das linhas
     for i, line in enumerate(lines_params):
         if line['type'] == 'spline':
             # Spline paramétrica - funciona para qualquer orientação
             u_vals = np.linspace(line['u_range'][0], line['u_range'][1], 20)
             x, y = splev(u_vals, line['tck'])
-            plt.plot(x, y, color=line_color, linewidth=2.5)
-            
+            plt.plot(x, y, color=line_color, linewidth=1.5)
         elif line['type'] == 'line':
             # Linha reta - tratamento especial para verticais
             if line['representation'] == 'y=f(x)':
                 plt.plot(line['x_range'], line['y_range'], 
-                        color=line_color, linewidth=2.5)
+                        color=line_color, linewidth=1.5)
             else:  # x=f(y)
                 plt.plot(line['x_range'], line['y_range'],
-                        color=line_color, linewidth=2.5)
+                        color=line_color, linewidth=1.5)
                 
         elif line['type'] == 'point':
             plt.scatter(line['point'][0], line['point'][1], 
                        color=line_color, s=50, marker='s')
+
+    for i, centroid in enumerate(centroids):
+        plt.scatter(centroid[0], centroid[1], color=cluster_colors[i], label=f'Centroide {i+1}', marker='X', edgecolors='black', s=75)
     
-    plt.scatter(centroids[:, 0], centroids[:, 1], c='black', marker='X', s=50)
+    plt.legend(loc='best', ncol=4, title='Centroides', fontsize='small')
     plt.title('Caminho Médio: Segmentos por Cluster (Verticais e Horizontais)')
     plt.grid(True, alpha=0.3)
     
+    # Adiciona a reta divisória se fornecida
+    if split_line is not None:
+        m, b = split_line
+        
+        # Para retas verticais
+        if m == 0:
+            x_val = b
+            y_min = np.min(points[:, 1])
+            y_max = np.max(points[:, 1])
+            plt.plot([x_val, x_val], [y_min, y_max], 
+                    'r--', linewidth=3, label=f'Divisão Treino/Teste (x = {b})')
+        else:
+            # Código existente para retas não verticais
+            x_vals = np.array([np.min(points[:, 0]), np.max(points[:, 0])])
+            y_vals = m * x_vals + b
+            plt.plot(x_vals, y_vals, 'r--', linewidth=3, label='Divisão Treino/Teste')
+            
     if plot_dir:
         os.makedirs(plot_dir, exist_ok=True)
-        plt.savefig(f"{plot_dir}/cluster_lines_path.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{plot_dir}/cluster_lines.png", dpi=300, bbox_inches='tight')
         plt.close()
     else:
         plt.show()
@@ -443,8 +457,8 @@ def main():
         print(f"Erro ao listar diretórios em {input_path}: {e}")
         return
     
-    #plot_individual_routes(input_path, output_dir)
-    #return
+    VERTICAL_LINE_PARAMS = (0, 756800)  
+    TEST_SIDE = 'left'  
 
     # Calcular o Caminho mediano
     globalpos_data = load_all_globalpos(input_path, x_offset = 7*(10**6))
@@ -455,6 +469,7 @@ def main():
         points=np.vstack([np.array([[item['x'], item['y']] for data in globalpos_data for item in data])]),
         centroids=centroids,
         lines_params=lines_params,
+        split_line=VERTICAL_LINE_PARAMS,
         plot_dir=os.path.join(output_dir, "caminho_mediano")
     )
 

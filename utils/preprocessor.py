@@ -146,6 +146,9 @@ def calculate_distance_to_path(point, theta_vehicle, median_path):
     
     # 1. Encontra o centróide mais próximo
     distances_to_centroids = np.linalg.norm(centroids - point, axis=1)
+    #print(f"---------Distâncias até os 5 menores centroides: {point}----------------")
+    #print(np.argpartition(distances_to_centroids, 5)[:5])
+    #print (distances_to_centroids[np.argpartition(distances_to_centroids, 5)[:5]])
     nearest_idx = np.argmin(distances_to_centroids)
     line = lines_params[nearest_idx]
     
@@ -187,9 +190,14 @@ def calculate_distance_to_path(point, theta_vehicle, median_path):
 def calculate_distances(sampled_data, median_path):
     print("\nCalculando distâncias usando projeção ortogonal nas retas dos centróides...")
     
-    point = np.array([0, 0])
+    point1 = np.array([0, 0])
+    point2 = np.array([757200, -363800])
+    point3 = np.array([756800, -364000])
     theta_vehicle = 0.0
     #print(median_path['centroids'])
+    print(f"Calculando distância para teste, ponto {point1}: {calculate_distance_to_path(point1, theta_vehicle, median_path)}")
+    print(f"Calculando distância para teste, ponto {point3}: {calculate_distance_to_path(point3, theta_vehicle, median_path)}")
+    print(f"Calculando distância para teste, ponto {point2}: {calculate_distance_to_path(point2, theta_vehicle, median_path)}")
     print(f"Calculando distância para teste, ponto {median_path['centroids'][40]}: {calculate_distance_to_path(median_path['centroids'][40], theta_vehicle, median_path)}")
 
     for item in sampled_data:
@@ -343,6 +351,7 @@ def main():
     #print(median_path['lines_params'])
     print(f"\nArquivo {os.path.join(data_dir, "caminho_mediano") + '/caminho_mediano.npz'} contendo o Caminho Mediano lido.")
     sampled_data = sample_pointclouds(data_dir)
+    #sampled_data = []
     sampled_data = calculate_distances(sampled_data, median_path)
     save_training_data(sampled_data, output_dir)
     #view_training_data(output_dir + '/complete_training_data.npz')
