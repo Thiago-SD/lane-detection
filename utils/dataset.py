@@ -287,7 +287,8 @@ def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
             'y_range': y_range,
             'theta': theta,
             'centroid': centroids[i],
-            'n_points': len(cluster_points)
+            'n_points': len(cluster_points),
+            'label': i
         })
     
     return centroids, lines_params
@@ -329,11 +330,22 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None, s
         elif line['type'] == 'point':
             plt.scatter(line['point'][0], line['point'][1], 
                        color=line_color, s=50, marker='s')
+            
+    test_points = np.array([[757200, -363800], [756800, -364000], [756800, -363700], [757600, -363900], [757800, -363700]])
+    plt.scatter(test_points[:, 0], test_points[:, 1], color='black', label=f'Test Point {i}', marker='o', edgecolors='red', s=75)
+
 
     for i, centroid in enumerate(centroids):
-        plt.scatter(centroid[0], centroid[1], color=cluster_colors[i], label=f'Centroide {i+1}', marker='X', edgecolors='black', s=75)
+        plt.scatter(centroid[0], centroid[1], color=cluster_colors[i], label=f'Centroide {i}', marker='X', edgecolors='black', s=75)
+    for i, (x, y) in enumerate(centroids):
+        offset_x = 0.1 * (centroids[:,0].max() - centroids[:,0].min())
+        plt.annotate(f'{i}',
+                    xy=(x, y),
+                    xytext=(x + offset_x, y),
+                    arrowprops=dict(arrowstyle='->', lw=1, color='gray'),
+                    bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7))
     
-    plt.legend(loc='best', ncol=4, title='Centroides', fontsize='small')
+    #plt.legend(loc='best', ncol=4, title='Centroides', fontsize='small')
     plt.title('Caminho Médio: Segmentos por Cluster (Verticais e Horizontais)')
     plt.grid(True, alpha=0.3)
     
