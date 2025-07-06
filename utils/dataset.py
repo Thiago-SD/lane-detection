@@ -116,22 +116,11 @@ def binaryTo3d(file_path):
 
 # Função para encontrar a mensagem mais próxima no tempo
 def find_nearest_timestamp(target_timestamp, timestamps):
-    """
-    Encontra o índice da mensagem mais próxima no tempo para um determinado timestamp.
-    :param target_timestamp: Timestamp de referência.
-    :param timestamps: Array de timestamps.
-    :return: Índice da mensagem mais próxima.
-    """
     diffs = np.abs(timestamps - target_timestamp)
     #print(target_timestamp)
     return np.argmin(diffs)
 
 def read_globalpos_file(globalpos_file_path, x_offset=0.0, y_offset=0.0):
-    """
-    Lê o arquivo de posição global e retorna os dados como um array NumPy estruturado.
-    :param globalpos_file_path: Caminho para o arquivo de posição global.
-    :return: Array NumPy estruturado com campos x, y, theta e timestamp.
-    """
     globalpos_data = []
     with open(globalpos_file_path, 'r') as f:
         lines = f.readlines()
@@ -156,7 +145,6 @@ def read_globalpos_file(globalpos_file_path, x_offset=0.0, y_offset=0.0):
     ]))
 
 def load_all_globalpos(data_dir, x_offset=0.0, y_offset=0.0):
-    """Carrega todas as posições globais dos arquivos .txt de globalpos"""
     print("\nCarregando dados de posição global dos arquivos txt...")
     
     # Lista todos os arquivos globalpos_*.txt no diretório
@@ -330,18 +318,15 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None, s
         elif line['type'] == 'point':
             plt.scatter(line['point'][0], line['point'][1], 
                        color=line_color, s=50, marker='s')
-            
-    test_points = np.array([[757200, -363800], [756800, -364000], [756800, -363700], [757600, -363900], [757800, -363700]])
-    plt.scatter(test_points[:, 0], test_points[:, 1], color='black', label=f'Test Point {i}', marker='o', edgecolors='red', s=75)
-
 
     for i, centroid in enumerate(centroids):
         plt.scatter(centroid[0], centroid[1], color=cluster_colors[i], label=f'Centroide {i}', marker='X', edgecolors='black', s=75)
     for i, (x, y) in enumerate(centroids):
-        offset_x = 0.1 * (centroids[:,0].max() - centroids[:,0].min())
+        offset_x = 0.05 * (centroids[:,0].max() - centroids[:,0].min())
+        offset_y = 0.01 * (centroids[:,1].max() - centroids[:,1].min())
         plt.annotate(f'{i}',
                     xy=(x, y),
-                    xytext=(x + offset_x, y),
+                    xytext=(x + offset_x, y + offset_y),
                     arrowprops=dict(arrowstyle='->', lw=1, color='gray'),
                     bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7))
     

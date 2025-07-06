@@ -238,36 +238,60 @@ def plot_with_distances(points_with_distances, median_path, split_line=None, tes
             y_vals = m * x_vals + b
             plt.plot(x_vals, y_vals, 'r--', linewidth=2, label='Divisão Treino/Teste')
     
-    # 4. Plot e enumeração dos pontos de teste
-    plot_points = points_with_distances
-    if len(points_with_distances) > max_points_to_plot:
-        plot_points = np.random.choice(points_with_distances, max_points_to_plot, replace=False)
+    # 4. Plot dos pontos com as 5 menores distâncias
+    plot_points = points_with_distances[:max_points_to_plot]  # Limita número de pontos
     
-    for i, data in enumerate(plot_points):
-        point = data['point']
-        distance = data['distance']
-        segment_label = data['path_segment']
+    for point_data in plot_points:
+        point = point_data['point']
+        assigned_segment = point_data['path_segment']
         
-        # Cor baseada no sinal da distância
-        color = 'green' if distance >= 0 else 'red'
+        # Calcula distâncias para todos os centróides
+        distances = np.linalg.norm(centroids - point, axis=1)
+        
+        # Obtém os 5 centróides mais próximos
+        nearest_indices = np.argpartition(distances, 5)[:5]
+        nearest_distances = distances[nearest_indices]
+        
+        # Ordena por distância
+        sorted_indices = np.argsort(nearest_distances)
+        nearest_indices = nearest_indices[sorted_indices]
+        nearest_distances = nearest_distances[sorted_indices]
         
         # Plot do ponto
-        plt.scatter(point[0], point[1], c=color, s=50, alpha=0.7)
+        plt.scatter(point[0], point[1], c='green' if point_data['distance'] >=0 else 'red', 
+                   s=80, alpha=0.7, edgecolors='black')
         
-        # Enumeração do ponto
-        plt.text(point[0], point[1], f'P{i}', fontsize=9, ha='center', va='center', 
+        # Plot das linhas para os 5 centróides mais próximos
+        for i, (idx, dist) in enumerate(zip(nearest_indices, nearest_distances)):
+            centroid = centroids[idx]
+            
+            # Estilo diferente para o centróide atribuído
+            if idx == assigned_segment:
+                line_style = 'k-'  
+                line_width = 1.5
+                
+            else:
+                line_style = ':'
+                line_width = 0.8
+            
+            plt.plot([point[0], centroid[0]], [point[1], centroid[1]], 
+                    line_style, linewidth=line_width, alpha=0.7)
+
+            offset_x = 30
+            offset_y = 90
+            
+            # Anota a distância com seta (modelo solicitado)
+            plt.annotate(f'{dist:.1f}m',
+                xy=(centroid[0], centroid[1]),
+                xytext=(centroid[0] + offset_x, centroid[1] + offset_y),
+                arrowprops=dict(arrowstyle='->', lw=1, color='gray', shrinkA=5, shrinkB=5),
+                bbox=dict(boxstyle='round,pad=0.1', fc='white', alpha=0.7),
+                ha='center', va='center', fontsize=8)
+        
+        # Anota o ponto
+        plt.text(point[0], point[1]+0.7, f'P{point_data.get("original_index", "?")}', 
+                fontsize=10, ha='center', va='bottom',
                 bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
-        
-        # Linha ao centróide atribuído
-        centroid = centroids[segment_label]
-        plt.plot([point[0], centroid[0]], [point[1], centroid[1]], 
-                'gray', linestyle=':', alpha=0.5)
-        
-        # Mostra distância para alguns pontos
-        if i % 5 == 0:  # Mostra a cada 5 pontos
-            offset = 0.5 if i % 2 == 0 else -0.5  # Alterna posição para evitar sobreposição
-            plt.text(point[0], point[1] + offset, f'{distance:.1f}m', 
-                    fontsize=8, ha='center', color='black')
     
     # Configurações finais do gráfico
     plt.title('Distâncias aos Centróides - Enumerados')
