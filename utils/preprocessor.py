@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import datetime
 from scipy.spatial import KDTree
 from scipy.signal import savgol_filter
 from scipy.optimize import minimize_scalar
@@ -99,9 +100,10 @@ def smooth_path_old(path, window_size=5, polyorder=2):
     
     return path
 
-def sample_pointclouds(data_dir):
-    """Amostra pointclouds e associa ao caminho mediano"""
-    sampled_data = []
+def sample_pointclouds(data_dir, split_line=None, test_side='left', x_offset=0.0, y_offset=0.0):
+    """Amostra pointclouds e já separa em treino/teste conforme linha de divisão"""
+    train_data = []
+    test_data = []
     
     for filename in sorted(os.listdir(data_dir)):
         if not filename.endswith('.npy'):
@@ -126,20 +128,32 @@ def sample_pointclouds(data_dir):
                     item = dataset[idx]
                     rel_time = item['timestamp'] - dataset[0]['timestamp']
                     
-                    sampled_data.append({
+                    sample = {
                         'pointcloud': item['pointcloud'],
                         'globalpos': np.array([item['x'], item['y'], item['theta']]),
                         'global_timestamp': item['timestamp'],
                         'relative_timestamp': rel_time,
                         'source_file': filename,
                         'original_index': idx
-                    })
+                    }
+                    
+                    # Separa em treino/teste conforme a linha
+                    if split_line is not None:
+                        m, b = split_line
+                        x = item['x']
+                        # Verifica posição relativa à linha
+                        if (test_side == 'right' and x > b) or (test_side == 'left' and x < b):
+                            test_data.append(sample)
+                        else:
+                            train_data.append(sample)
+                    else:
+                        train_data.append(sample)
                     
         except Exception as e:
             print(f"Erro ao processar {filename}: {str(e)}")
     
-    print(f"Total de pointclouds amostradas: {len(sampled_data)}")
-    return sampled_data
+    print(f"Total de pointclouds amostradas - Treino: {len(train_data)}, Teste: {len(test_data)}")
+    return train_data, test_data
 
 def calculate_distance_to_path(point, theta_vehicle, median_path):
     centroids = median_path['centroids']
@@ -147,11 +161,6 @@ def calculate_distance_to_path(point, theta_vehicle, median_path):
     
     # 1. Encontra o centróide mais próximo
     distances_to_centroids = np.linalg.norm(centroids - point, axis=1)
-    print("--->Point:", point)
-    print("--->5 nearest centroids:")
-    nearest_5_indices = np.argpartition(distances_to_centroids, 5)[:5]
-    for idx in nearest_5_indices:
-        print(f"Centroid {idx}: {centroids[idx]}, distance: {distances_to_centroids[idx]}")
     
     nearest_idx = np.argmin(distances_to_centroids)
     
@@ -206,143 +215,122 @@ def calculate_distances(sampled_data, median_path):
     
     return sampled_data
 
-def plot_with_distances(points_with_distances, median_path, split_line=None, test_side='right', 
-                       plot_file=None, max_points_to_plot=50):
-    plt.figure(figsize=(20, 15))
-    
-    # 1. Plot dos segmentos do caminho mediano
-    for line in median_path['lines_params']:
-        if line['type'] == 'line':
-            plt.plot(line['x_range'], line['y_range'], 'b-', alpha=0.5, linewidth=1)
-    
-    # 2. Plot e enumeração dos centróides
+def plot_with_distances(points_with_distances, median_path, split_line=None, test_side='left', 
+                       plot_dir=None, max_points_to_plot=50):
+    plt.figure(figsize=(15, 10))
+    line_color = 'black'
+
+    # Normalização relativa
+    all_points = np.array([p['point'] for p in points_with_distances])
     centroids = median_path['centroids']
-    for i, centroid in enumerate(centroids):
-        plt.scatter(centroid[0], centroid[1], c='blue', marker='x', s=100)
-        plt.text(centroid[0], centroid[1], f'C{i}', fontsize=10, ha='right', va='bottom', 
-                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
+    lines_params = median_path['lines_params']
+    offset = np.mean(np.vstack([all_points, centroids]), axis=0)
+    scale = np.max(np.std(np.vstack([all_points, centroids]), axis=0))
+
+    # Plot das linhas
+    for i, line in enumerate(lines_params):
+        if line['type'] == 'spline':
+            # Spline paramétrica - funciona para qualquer orientação
+            u_vals = np.linspace(line['u_range'][0], line['u_range'][1], 20)
+            x, y = splev(u_vals, line['tck'])
+            plt.plot(x, y, color=line_color, linewidth=1.5)
+        elif line['type'] == 'line':
+            # Linha reta - tratamento especial para verticais
+            if line['representation'] == 'y=f(x)':
+                plt.plot(line['x_range'], line['y_range'], 
+                        color=line_color, linewidth=1.5)
+            else:  # x=f(y)
+                plt.plot(line['x_range'], line['y_range'],
+                        color=line_color, linewidth=1.5)
+                
+        elif line['type'] == 'point':
+            plt.scatter(line['point'][0], line['point'][1], 
+                       color=line_color, s=50, marker='s')
     
-    # 3. Plot da linha de divisão treino/teste
+    # 2. Plot dos centróides (normalizados)
+    for i, centroid in enumerate(centroids):
+        plt.scatter(centroid[0], centroid[1], color='blue', label=f'Centroide {i}', marker='x', s=25)
+        plt.text(centroid[0], centroid[1], f'{i}', fontsize=10, ha='center', va='bottom', color='black')
+
+    # 3. Adiciona a reta divisória se fornecida
     if split_line is not None:
         m, b = split_line
-        if m == 0:  # Linha vertical
+        
+        # Para retas verticais
+        if m == 0:
             x_val = b
-            y_min = min(p['point'][1] for p in points_with_distances)
-            y_max = max(p['point'][1] for p in points_with_distances)
-            plt.plot([x_val, x_val], [y_min, y_max], 'r--', linewidth=2, 
-                    label=f'Divisão Treino/Teste (x = {b})')
-        else:  # Linha não-vertical
-            x_min = min(p['point'][0] for p in points_with_distances)
-            x_max = max(p['point'][0] for p in points_with_distances)
-            x_vals = np.linspace(x_min, x_max, 2)
+            y_min = np.min(all_points[:, 1])
+            y_max = np.max(all_points[:, 1])
+            plt.plot([x_val, x_val], [y_min, y_max], 
+                    'r--', linewidth=3, label=f'Divisão Treino/Teste (x = {b})')
+        else:
+            # Código existente para retas não verticais
+            x_vals = np.array([np.min(all_points[:, 0]), np.max(all_points[:, 0])])
             y_vals = m * x_vals + b
-            plt.plot(x_vals, y_vals, 'r--', linewidth=2, label='Divisão Treino/Teste')
-    
-    # 4. Plot dos pontos com as 5 menores distâncias
-    plot_points = points_with_distances[:max_points_to_plot]  # Limita número de pontos
-    
-    for point_data in plot_points:
+            plt.plot(x_vals, y_vals, 'r--', linewidth=3, label='Divisão Treino/Teste')
+
+    # 4. Plot dos pontos (normalizados)
+    for i, point_data in enumerate(points_with_distances[:max_points_to_plot]):
         point = point_data['point']
-        assigned_segment = point_data['path_segment']
-        
-        # Calcula distâncias para todos os centróides
-        distances = np.linalg.norm(centroids - point, axis=1)
-        
-        # Obtém os 5 centróides mais próximos
-        nearest_indices = np.argpartition(distances, 5)[:5]
-        nearest_distances = distances[nearest_indices]
-        
-        # Ordena por distância
-        sorted_indices = np.argsort(nearest_distances)
-        nearest_indices = nearest_indices[sorted_indices]
-        nearest_distances = nearest_distances[sorted_indices]
+        centroid = centroids[point_data['path_segment']]
         
         # Plot do ponto
-        plt.scatter(point[0], point[1], c='green' if point_data['distance'] >=0 else 'red', 
+        plt.scatter(point[0], point[1], 
+                   c='green' if point_data['distance'] >=0 else 'red',
                    s=80, alpha=0.7, edgecolors='black')
         
-        # Plot das linhas para os 5 centróides mais próximos
-        for i, (idx, dist) in enumerate(zip(nearest_indices, nearest_distances)):
-            centroid = centroids[idx]
-            
-            # Estilo diferente para o centróide atribuído
-            if idx == assigned_segment:
-                line_style = 'k-'  
-                line_width = 1.5
-                
-            else:
-                line_style = ':'
-                line_width = 0.8
-            
-            plt.plot([point[0], centroid[0]], [point[1], centroid[1]], 
-                    line_style, linewidth=line_width, alpha=0.7)
-
-            offset_x = 30
-            offset_y = 90
-            
-            # Anota a distância com seta (modelo solicitado)
-            plt.annotate(f'{dist:.1f}m',
-                xy=(centroid[0], centroid[1]),
-                xytext=(centroid[0] + offset_x, centroid[1] + offset_y),
-                arrowprops=dict(arrowstyle='->', lw=1, color='gray', shrinkA=5, shrinkB=5),
-                bbox=dict(boxstyle='round,pad=0.1', fc='white', alpha=0.7),
-                ha='center', va='center', fontsize=8)
+        # Linha para o centróide
+        plt.plot([point[0], centroid[0]], [point[1], centroid[1]],
+                'k-', linewidth=1, alpha=0.5)
         
-        # Anota o ponto
-        plt.text(point[0], point[1]+0.7, f'P{point_data.get("original_index", "?")}', 
-                fontsize=10, ha='center', va='bottom',
-                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
-    
-    # Configurações finais do gráfico
-    plt.title('Distâncias aos Centróides - Enumerados')
-    plt.xlabel('Coordenada X')
-    plt.ylabel('Coordenada Y')
+        # Anotação
+        plt.annotate(f'P{i}\n{point_data["distance"]:.1f}m',
+                    xy=point,
+                    xytext=(5,5), textcoords='offset points',
+                    fontsize=8, bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7))
+
+    plt.gca().set_aspect('equal', adjustable='datalim')
     plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.axis('equal')
+    plt.title('Distâncias ao Caminho Médio (Coordenadas Normalizadas)')
     
-    # Adiciona legenda explicativa
-    plt.figtext(0.5, 0.01, 
-               "Legenda:\n"
-               "C# = Centróides (azuis)\n"
-               "P# = Pontos de teste (verde=positivo, vermelho=negativo)\n"
-               "Linhas tracejadas = Distâncias aos centróides", 
-               ha='center', fontsize=10, bbox=dict(facecolor='white', alpha=0.5))
-    
-    if plot_file:
-        plt.savefig(plot_file, dpi=300, bbox_inches='tight')
+    if plot_dir:
+        plt.savefig(f"{plot_dir}/distancias_centroides_{datetime.datetime.now().timestamp()}.png", dpi=300, bbox_inches='tight')
         plt.close()
-        print(f"Gráfico salvo em: {plot_file}")
-    else:
-        plt.show()
 
-def save_training_data(sampled_data, output_dir):
-    """Salva todos os dados de treinamento em um único arquivo .npz formatado"""
+def save_training_data(train_data, test_data, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-        
+    
+    # Combina todos os dados
+    all_data = train_data + test_data
+    
+    # Cria array de máscara (1 para treino, 0 para teste)
+    train_mask = np.array([1] * len(train_data) + [0] * len(test_data), dtype=np.uint8)
+    
     # Extrai todos os dados em arrays separados
-    x = np.array([item['globalpos'][0] for item in sampled_data], dtype=np.float32)
-    y = np.array([item['globalpos'][1] for item in sampled_data], dtype=np.float32)
-    theta = np.array([item['globalpos'][2] for item in sampled_data], dtype=np.float32)
-    global_timestamps = np.array([item['global_timestamp'] for item in sampled_data], dtype=np.float64)
-    relative_timestamps = np.array([item['relative_timestamp'] for item in sampled_data], dtype=np.float64)
-    distances = np.array([item['distance'] for item in sampled_data], dtype=np.float32)
-    pointclouds = np.array([item['pointcloud'] for item in sampled_data], dtype=object)
-    source_files = np.array([item['source_file'] for item in sampled_data], dtype=object)
+    x = np.array([item['globalpos'][0] for item in all_data], dtype=np.float32)
+    y = np.array([item['globalpos'][1] for item in all_data], dtype=np.float32)
+    theta = np.array([item['globalpos'][2] for item in all_data], dtype=np.float32)
+    global_timestamps = np.array([item['global_timestamp'] for item in all_data], dtype=np.float64)
+    relative_timestamps = np.array([item['relative_timestamp'] for item in all_data], dtype=np.float64)
+    distances = np.array([item['distance'] for item in all_data], dtype=np.float32)
+    pointclouds = np.array([item['pointcloud'] for item in all_data], dtype=object)
+    source_files = np.array([item['source_file'] for item in all_data], dtype=object)
     
     # Cria dicionário com metadados
     metadata = {
-        'description': 'Dataset de treinamento para detecção de faixa',
-        'num_samples': len(sampled_data),
+        'description': 'Dataset completo para detecção de faixa',
+        'num_samples': len(all_data),
+        'num_train': len(train_data),
+        'num_test': len(test_data),
         'variables': ['x', 'y', 'theta', 'global_timestamp', 'relative_timestamp', 
-                     'distance', 'pointcloud', 'source_file'],
+                     'distance', 'pointcloud', 'source_file', 'train_mask'],
         'units': {
             'x': 'metros',
             'y': 'metros',
             'theta': 'radianos',
             'timestamps': 'segundos',
             'distance': 'metros'
-        }
+        },
     }
     
     # Salva em um único arquivo .npz (comprimido)
@@ -357,17 +345,19 @@ def save_training_data(sampled_data, output_dir):
         distances=distances,
         pointclouds=pointclouds,
         source_files=source_files,
+        train_mask=train_mask,
         metadata=metadata
     )
     
-    print(f"Dados salvos em: {output_path}")
-    print(f"Total de amostras: {len(sampled_data)}")
+    print(f"\nDados salvos em: {output_path}")
+    print(f"Total de amostras: {len(all_data)} (Treino: {len(train_data)}, Teste: {len(test_data)})")
     print("Variáveis incluídas:")
     print("- Posições (x, y, theta)")
     print("- Timestamps (global e relativo)")
     print("- Distâncias até o centro da faixa")
     print("- Pointclouds completas")
     print("- Arquivos de origem")
+    print("- Máscara de treino/teste (train_mask)")
 
 def view_training_data(npz_file_path, num_samples=5):
     """
@@ -452,88 +442,133 @@ def main():
     # Pipeline principal
     #globalpos_data = load_all_globalpos_old(data_dir)
     #median_path = calculate_median_path_old(globalpos_data)
-    median_path = np.load(os.path.join(data_dir, "caminho_mediano") + '/caminho_mediano.npz', allow_pickle=True)
-    #print(median_path['lines_params'])
-    print(f"\nArquivo {os.path.join(data_dir, "caminho_mediano") + '/caminho_mediano.npz'} contendo o Caminho Mediano lido.")
-    #sampled_data = sample_pointclouds(data_dir)
-    sampled_data = [
-    {
-        'pointcloud': np.random.rand(100, 3),  # Dummy pointcloud
-        'globalpos': np.array([median_path['centroids'][0][0], median_path['centroids'][0][1], 0.0]),  # [x, y, theta]
-        'global_timestamp': 123456.789,
-        'relative_timestamp': 0.0,
-        'source_file': 'test_file1.npy',
-        'original_index': 0
-    },
-    {
-        'pointcloud': np.random.rand(100, 3),
-        'globalpos': np.array([757200, -363800, 0.1]),
-        'global_timestamp': 123457.789,
-        'relative_timestamp': 1.0,
-        'source_file': 'test_file2.npy',
-        'original_index': 1
-    },
-    {
-        'pointcloud': np.random.rand(100, 3),
-        'globalpos': np.array([756800, -364000, -0.1]),
-        'global_timestamp': 123458.789,
-        'relative_timestamp': 2.0,
-        'source_file': 'test_file3.npy',
-        'original_index': 2
-    },
-    {
-        'pointcloud': np.random.rand(100, 3),
-        'globalpos': np.array([756800, -363700, 0.2]),
-        'global_timestamp': 123459.789,
-        'relative_timestamp': 3.0,
-        'source_file': 'test_file4.npy',
-        'original_index': 3
-    },
-    {
-        'pointcloud': np.random.rand(100, 3),
-        'globalpos': np.array([757600, -363900, -0.2]),
-        'global_timestamp': 123460.789,
-        'relative_timestamp': 4.0,
-        'source_file': 'test_file5.npy',
-        'original_index': 4
-    },
-    {
-        'pointcloud': np.random.rand(100, 3),
-        'globalpos': np.array([757800, -363700, 0.3]),
-        'global_timestamp': 123461.789,
-        'relative_timestamp': 5.0,
-        'source_file': 'test_file6.npy',
-        'original_index': 5
+    median_data = np.load(os.path.join(data_dir, "caminho_mediano", 'caminho_mediano.npz'), allow_pickle=True)
+
+    median_path = {
+        'x_offset': median_data['x_offset'],
+        'y_offset': median_data['y_offset'],
+        'centroids': median_data['centroids'],
+        'lines_params': median_data['lines_params'],
+        'split_params': median_data['split_params'][()] if 'split_params' in median_data else None
     }
-]
-    sampled_data = calculate_distances(sampled_data, median_path)
 
+    print(f"\nArquivo {os.path.join(data_dir, "caminho_mediano") + '/caminho_mediano.npz'} contendo o Caminho Mediano lido.")
+
+    split_params = median_path['split_params']
+    print(split_params)
+    """
     
-    # Prepara dados para plotagem (formato específico)
-    points_with_distances = []
-    for item in sampled_data:
-        point_data = {
-            'point': np.array([item['globalpos'][0], item['globalpos'][1]]),
-            'distance': item['distance'],
-            'path_segment': item['path_segment']
+    train_data, test_data = sample_pointclouds(data_dir, split_line=split_params['split_line'], test_side=split_params['test_side'])
+
+    # Calcula distâncias para ambos os conjuntos
+    train_data = calculate_distances(train_data, median_path)
+    test_data = calculate_distances(test_data, median_path)
+
+    save_training_data(train_data, test_data, output_dir)
+    view_training_data(output_dir + '/complete_training_data.npz')
+    """
+    
+    test_points  = [
+        {
+            'pointcloud': np.random.rand(100, 3),  # Dummy pointcloud
+            'globalpos': np.array([median_path['centroids'][0][0], median_path['centroids'][0][1], 0.0]),  # [x, y, theta]
+            'global_timestamp': 123456.789,
+            'relative_timestamp': 0.0,
+            'source_file': 'test_file1.npy',
+            'original_index': 0
+        },
+        {
+            'pointcloud': np.random.rand(100, 3),
+            'globalpos': np.array([757200, -363800, 0.1]),
+            'global_timestamp': 123457.789,
+            'relative_timestamp': 1.0,
+            'source_file': 'test_file2.npy',
+            'original_index': 1
+        },
+        {
+            'pointcloud': np.random.rand(100, 3),
+            'globalpos': np.array([756800, -364000, -0.1]),
+            'global_timestamp': 123458.789,
+            'relative_timestamp': 2.0,
+            'source_file': 'test_file3.npy',
+            'original_index': 2
+        },
+        {
+            'pointcloud': np.random.rand(100, 3),
+            'globalpos': np.array([756800, -363700, 0.2]),
+            'global_timestamp': 123459.789,
+            'relative_timestamp': 3.0,
+            'source_file': 'test_file4.npy',
+            'original_index': 3
+        },
+        {
+            'pointcloud': np.random.rand(100, 3),
+            'globalpos': np.array([757600, -363900, -0.2]),
+            'global_timestamp': 123460.789,
+            'relative_timestamp': 4.0,
+            'source_file': 'test_file5.npy',
+            'original_index': 4
+        },
+        {
+            'pointcloud': np.random.rand(100, 3),
+            'globalpos': np.array([757800, -363700, 0.3]),
+            'global_timestamp': 123461.789,
+            'relative_timestamp': 5.0,
+            'source_file': 'test_file6.npy',
+            'original_index': 5
         }
-        points_with_distances.append(point_data)
-    
-    split_line = (0, 756800)  # Linha vertical em x=5000
-    test_side = 'left'  # Pontos à direita são teste
+    ]
 
-    print("\nGerando gráfico de distâncias...")
+    # Carrega os dados completos de treinamento
+    training_data_path = os.path.join(output_dir, "complete_training_data.npz")
+    training_data = np.load(training_data_path, allow_pickle=True)
+    
+    # Separa índices de treino e teste
+    train_indices = np.where(training_data['train_mask'])[0]
+    test_indices = np.where(~training_data['train_mask'].astype(bool))[0]
+
+    # Seleciona 5 pontos aleatórios de cada conjunto
+    np.random.seed(42)  # Para reprodutibilidade
+    selected_train = np.random.choice(train_indices, size=min(5, len(train_indices)), replace=False)
+    selected_test = np.random.choice(test_indices, size=min(5, len(test_indices)), replace=False)
+
+    # Prepara a estrutura para plotagem
+    points_with_distances = []
+    
+    # Adiciona pontos de treino selecionados
+    for idx in selected_train:
+        points_with_distances.append({
+            'point': np.array([training_data['x'][idx], training_data['y'][idx]]),
+            'distance': training_data['distances'][idx],
+            'path_segment': training_data.get('path_segments', [0]*len(training_data['x']))[idx],
+            'is_test': False
+        })
+    
+    # Adiciona pontos de teste selecionados
+    for idx in selected_test:
+        points_with_distances.append({
+            'point': np.array([training_data['x'][idx], training_data['y'][idx]]),
+            'distance': training_data['distances'][idx],
+            'path_segment': training_data.get('path_segments', [0]*len(training_data['x']))[idx],
+            'is_test': True
+        })
+    
+    # Embaralha os pontos para misturar treino/teste no plot
+    np.random.shuffle(points_with_distances)
+    
+    # Gera o gráfico
+    print("\nGerando gráfico de distâncias com amostra aleatória...")
     plot_with_distances(
         points_with_distances=points_with_distances,
         median_path=median_path,
-        split_line=split_line,
-        test_side='right',
-        plot_file=os.path.join(output_dir, 'distancias_centroides.png'),
-        max_points_to_plot=min(100, len(points_with_distances))  # Plota até 100 pontos
+        split_line=split_params['split_line'] if split_params else None,
+        test_side=split_params['test_side'] if split_params else 'left',
+        plot_dir=output_dir,
+        max_points_to_plot=10  # Plotará todos os 10 pontos selecionados
     )
-    save_training_data(sampled_data, output_dir)
-    #view_training_data(output_dir + '/complete_training_data.npz')
     
+    print("\nProcesso concluído! Gráfico salvo em:", os.path.join(output_dir, 'distancias_amostra_aleatoria.png'))
+
     print("\nProcesso concluído com sucesso!")
 
 if __name__ == "__main__":

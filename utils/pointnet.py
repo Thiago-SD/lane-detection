@@ -9,12 +9,21 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 NUM_EPOCHS = 100
 
 class LaneDataset(Dataset):
-    def __init__(self, data_path, normalize_params=None):
+    def __init__(self, data_path, mode='train', normalize_params=None):
         print(f"Carregando dataset de {data_path}...")
         data = np.load(data_path, allow_pickle=True)
         self.pointclouds = data['pointclouds']
         self.distances = data['distances']
         
+        # Filtra os dados conforme o modo
+        if mode in ['train', 'test']:
+            mask = data['train_mask'] if mode == 'train' else ~data['train_mask'].astype(bool)
+            self.pointclouds = data['pointclouds'][mask]
+            self.distances = data['distances'][mask]
+        else:  # 'all'
+            self.pointclouds = data['pointclouds']
+            self.distances = data['distances']
+
         if normalize_params:
             self.normalize_params = normalize_params
         else:
@@ -25,7 +34,9 @@ class LaneDataset(Dataset):
                     'std': np.std(self.distances)
                 }
             }
-        print(f"Dataset carregado com {len(self)} amostras.")
+        print(f"Dataset {mode} carregado com {len(self)} amostras")
+        if 'split_params' in self.metadata:
+            print(f"Divisão original: {self.metadata['split_params']}")
     
     def __len__(self):
         return len(self.distances)
@@ -48,13 +59,6 @@ class LaneDataset(Dataset):
             'distance': torch.FloatTensor([distance])
         }
 
-def split_dataset(dataset, test_size=0.2):
-    print(f"Dividindo dataset (treino: {1-test_size:.0%}, teste: {test_size:.0%})...")
-    test_len = int(len(dataset) * test_size)
-    train_len = len(dataset) - test_len
-    return random_split(dataset, [train_len, test_len])
-
-#Nota: Arquitetura de rede neural está sujeita a alteração caso seja proveitoso
 class PointNetPP(nn.Module):
     def __init__(self, norm_mean=0.0, norm_std=1.0):
         super().__init__()
@@ -95,9 +99,10 @@ class PointNetPP(nn.Module):
         return x
 
 def train_model(data_path, epochs=50, batch_size=32, test_size=0.2):
-    # Inicialização
-    full_dataset = LaneDataset(data_path)
-    train_dataset, test_dataset = split_dataset(full_dataset, test_size)
+    full_dataset = LaneDataset(data_path, mode='all')
+    
+    train_dataset = LaneDataset(data_path, mode='train')
+    test_dataset = LaneDataset(data_path, mode='test')
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
@@ -106,7 +111,7 @@ def train_model(data_path, epochs=50, batch_size=32, test_size=0.2):
         norm_mean=full_dataset.normalize_params['distance']['mean'],
         norm_std=full_dataset.normalize_params['distance']['std']
     )
-    
+         
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     

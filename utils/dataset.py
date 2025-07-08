@@ -1,4 +1,5 @@
 import os
+import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 import math
@@ -28,6 +29,14 @@ ODOM_TAG = 'ROBOTVELOCITY_ACK'
 CAMERA_TAG = 'BUMBLEBEE_BASIC_STEREOIMAGE_IN_FILE3'
 VELODYNE_TAG = 'VELODYNE_PARTIAL_SCAN_IN_FILE'
 XSENS_TAG = 'XSENS_QUAT'
+
+#Parametros para linha que divide treino e teste
+VERTICAL_LINE_PARAMS = (0, 7.7568*(10**6))#(0, 756800)  
+TEST_SIDE = 'left'  
+
+#Offsets para coordenadas X e Y observadas
+X_OFFSET = 0#7*(10**6)
+Y_OFFSET = 0
 
 # Função para ler e converter dados binários em pontos 3D
 def binaryTo3d(file_path):
@@ -219,7 +228,7 @@ def split_by_line(points, line_params, test_side='above'):
     train_mask = ~test_mask
     return train_mask, test_mask
 
-def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
+def calculate_median_path(all_data_arrays, split_line=None, test_side='left', plot_dir=None, n_clusters=100):
     """Calcula o caminho médio usando splines lineares paramétricas por cluster."""
     # Concatena e processa os dados
     all_data = np.concatenate(all_data_arrays)
@@ -279,11 +288,21 @@ def calculate_median_path(all_data_arrays, plot_dir=None, n_clusters=100):
             'label': i
         })
     
-    return centroids, lines_params
+    median_path = {
+        'centroids': centroids,
+        'lines_params': lines_params,
+        'split_params': {
+            'split_line': split_line if split_line is not None else (0, 0), 
+            'test_side': test_side, 
+            'creation_date': datetime.datetime.now().timestamp()
+        }
+    }
+    
+    return median_path
 
 
 def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None, split_line=None):
-    plt.figure(figsize=(30, 15))
+    plt.figure(figsize=(40, 15))
     
     # Cria um mapa de cores fixo para os clusters
     n_clusters = len(centroids)
@@ -353,7 +372,7 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None, s
             
     if plot_dir:
         os.makedirs(plot_dir, exist_ok=True)
-        plt.savefig(f"{plot_dir}/cluster_lines.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{plot_dir}/cluster_lines_{datetime.datetime.now().timestamp()}.png", dpi=300, bbox_inches='tight')
         plt.close()
     else:
         plt.show()
@@ -397,11 +416,6 @@ def plot_individual_routes(data_dir, output_dir):
         print(f'Gráfico salvo: {output_path}')
 
 def print_dataset_structure(dataset_path, num_samples=5):
-    """
-    Carrega o dataset numpy e imprime o formato dos vetores armazenados.
-    :param dataset_path: Caminho para o arquivo .npy
-    :param num_samples: Número de entradas aleatórias a serem exibidas (padrão: 5)
-    """
     try:
         # Carregar o dataset
         dataset = np.load(dataset_path, allow_pickle=True)
@@ -453,28 +467,31 @@ def main():
     except Exception as e:
         print(f"Erro ao listar diretórios em {input_path}: {e}")
         return
-    
-    VERTICAL_LINE_PARAMS = (0, 756800)  
-    TEST_SIDE = 'left'  
 
     # Calcular o Caminho mediano
-    globalpos_data = load_all_globalpos(input_path, x_offset = 7*(10**6))
-    centroids, lines_params = calculate_median_path(globalpos_data, n_clusters=80)
+    globalpos_data = load_all_globalpos(input_path, x_offset = X_OFFSET, y_offset=Y_OFFSET)
+    median_path = calculate_median_path(globalpos_data, n_clusters=80, split_line=VERTICAL_LINE_PARAMS, test_side=TEST_SIDE)
 
     # Geração do plot
     plot_cluster_lines_process(
         points=np.vstack([np.array([[item['x'], item['y']] for data in globalpos_data for item in data])]),
-        centroids=centroids,
-        lines_params=lines_params,
+        centroids=median_path['centroids'],
+        lines_params=median_path['lines_params'],
         split_line=VERTICAL_LINE_PARAMS,
         plot_dir=os.path.join(output_dir, "caminho_mediano")
     )
 
     # Salvar o Caminho mediano para uso no pré-processamento
-    np.savez(os.path.join(output_dir, "caminho_mediano") + '/caminho_mediano.npz', centroids = centroids, lines_params = lines_params)
+    np.savez(
+    os.path.join(output_dir, "caminho_mediano", 'caminho_mediano.npz'),
+    x_offset=X_OFFSET,
+    y_offset=Y_OFFSET,
+    centroids=median_path['centroids'],
+    lines_params=median_path['lines_params'],
+    split_params=median_path['split_params']  # Salva separadamente
+    )
 
     return
-
     # Processar cada diretório de log
     for dir_name in dirs:
         log_dir_path = os.path.join(input_path, dir_name)
