@@ -2,55 +2,52 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
-NUM_EPOCHS = 100
+NUM_EPOCHS = 1000
 
 class LaneDataset(Dataset):
-    def __init__(self, data_path, mode='train', normalize_params=None):
-        print(f"Carregando dataset de {data_path}...")
-        data = np.load(data_path, allow_pickle=True)
-        self.pointclouds = data['pointclouds']
-        self.distances = data['distances']
+    def __init__(self, npz_file, mode='train', num_points=1000):
+        data = np.load(npz_file, allow_pickle=True)
         
-        # Filtra os dados conforme o modo
-        if mode in ['train', 'test']:
-            mask = data['train_mask'] if mode == 'train' else ~data['train_mask'].astype(bool)
-            self.pointclouds = data['pointclouds'][mask]
-            self.distances = data['distances'][mask]
-        else:  # 'all'
-            self.pointclouds = data['pointclouds']
-            self.distances = data['distances']
-
-        if normalize_params:
-            self.normalize_params = normalize_params
+        # Carrega os dados de treino ou teste
+        if mode == 'train':
+            self.pointclouds = data['train'].item()['pointclouds']
+            self.distances = data['train'].item()['distances']
+            self.positions = data['train'].item()['positions']
         else:
-            print("Calculando parâmetros de normalização...")
-            self.normalize_params = {
-                'distance': {
-                    'mean': np.mean(self.distances),
-                    'std': np.std(self.distances)
-                }
+            self.pointclouds = data['test'].item()['pointclouds']
+            self.distances = data['test'].item()['distances']
+            self.positions = data['test'].item()['positions']
+        
+        # Calcula parâmetros de normalização
+        self.normalize_params = {
+            'distance': {
+                'mean': np.mean(self.distances),
+                'std': np.std(self.distances)
             }
+        }
+        
+        self.num_points = num_points
         print(f"Dataset {mode} carregado com {len(self)} amostras")
-        if 'split_params' in self.metadata:
-            print(f"Divisão original: {self.metadata['split_params']}")
-    
+
     def __len__(self):
         return len(self.distances)
-    
+
     def __getitem__(self, idx):
         pc = self.pointclouds[idx]
         
-        #Nota: Amostragem de 1000 pontos por Pointcloud, potencial alteração para treinamentos futuros
-        if len(pc) > 1000:
-            pc = pc[np.random.choice(len(pc), 1000, replace=False)]
+        # Amostragem de pontos (se necessário)
+        if len(pc) > self.num_points:
+            pc = pc[np.random.choice(len(pc), self.num_points, replace=False)]
         
-        coords = pc[:, :3]
+        # Normalização das coordenadas
+        coords = pc[:, :3]  # Pega apenas x,y,z (ignora intensidade se houver)
         coords = (coords - coords.mean(axis=0)) / (coords.std(axis=0) + 1e-8)
         
+        # Normalização da distância
         distance = (self.distances[idx] - self.normalize_params['distance']['mean']) / \
                    self.normalize_params['distance']['std']
         
@@ -98,24 +95,45 @@ class PointNetPP(nn.Module):
             return x * self.norm_std + self.norm_mean
         return x
 
-def train_model(data_path, epochs=50, batch_size=32, test_size=0.2):
-    full_dataset = LaneDataset(data_path, mode='all')
+def train_model(data_path, epochs=50, batch_size=32, num_points=1000):
+    # Carrega o dataset completo para normalização
+    full_data = np.load(data_path, allow_pickle=True)
+    train_data = full_data['train'].item()
+    test_data = full_data['test'].item()
     
-    train_dataset = LaneDataset(data_path, mode='train')
-    test_dataset = LaneDataset(data_path, mode='test')
+    # Calcula parâmetros de normalização globais
+    normalize_params = {
+        'distance': {
+            'mean': np.mean(np.concatenate([train_data['distances'], test_data['distances']])),
+            'std': np.std(np.concatenate([train_data['distances'], test_data['distances']]))
+        }
+    }
+    
+    # Cria os datasets
+    train_dataset = LaneDataset(data_path, mode='train', num_points=num_points)
+    test_dataset = LaneDataset(data_path, mode='test', num_points=num_points)
+    
+    # Sobrescreve os parâmetros de normalização com os globais
+    train_dataset.normalize_params = normalize_params
+    test_dataset.normalize_params = normalize_params
+    
+    # Verifica se há dados de teste
+    if len(test_dataset) == 0:
+        raise ValueError("Nenhum dado de teste encontrado.")
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
+    # Inicializa o modelo
     model = PointNetPP(
-        norm_mean=full_dataset.normalize_params['distance']['mean'],
-        norm_std=full_dataset.normalize_params['distance']['std']
+        norm_mean=normalize_params['distance']['mean'],
+        norm_std=normalize_params['distance']['std']
     )
-         
+    
+    # Restante da função permanece igual...
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     
-    # Armazenamento de métricas
     train_losses = []
     test_losses = []
     r2_scores = []
@@ -128,7 +146,7 @@ def train_model(data_path, epochs=50, batch_size=32, test_size=0.2):
         epoch_train_loss = 0
         for batch in train_loader:
             coords, target = batch['coordinates'], batch['distance']
-            coords = coords.view(len(target), -1, 3)
+            coords = coords.view(len(target), -1, 3)  # Reshape para (batch_size, num_points, 3)
             
             optimizer.zero_grad()
             output = model(coords)
@@ -138,7 +156,7 @@ def train_model(data_path, epochs=50, batch_size=32, test_size=0.2):
             
             epoch_train_loss += loss.item()
         
-        # Avaliação
+        # Avaliação (igual ao original)
         model.eval()
         epoch_test_loss = 0
         all_preds = []
@@ -150,37 +168,31 @@ def train_model(data_path, epochs=50, batch_size=32, test_size=0.2):
                 coords = coords.view(len(target), -1, 3)
                 output = model(coords)
                 
-                # Armazena para cálculo de métricas
                 all_preds.extend(output.cpu().numpy().flatten())
                 all_targets.extend(target.cpu().numpy().flatten())
-                
                 epoch_test_loss += criterion(output, target).item()
         
-        # Cálculo de métricas
+        # Cálculo de métricas (igual ao original)
         epoch_train_loss /= len(train_loader)
         epoch_test_loss /= len(test_loader)
         
-        # Desnormaliza para cálculo das métricas
-        all_targets = np.array(all_targets) * full_dataset.normalize_params['distance']['std'] + full_dataset.normalize_params['distance']['mean']
-        all_preds = np.array(all_preds) * full_dataset.normalize_params['distance']['std'] + full_dataset.normalize_params['distance']['mean']
+        all_targets = np.array(all_targets) * normalize_params['distance']['std'] + normalize_params['distance']['mean']
+        all_preds = np.array(all_preds) * normalize_params['distance']['std'] + normalize_params['distance']['mean']
         
         r2 = r2_score(all_targets, all_preds)
         mae = mean_absolute_error(all_targets, all_preds)
         
-        # Armazena métricas
         train_losses.append(epoch_train_loss)
         test_losses.append(epoch_test_loss)
         r2_scores.append(r2)
         mae_scores.append(mae)
         
-        # Log de progresso
         print(f"\nEpoch {epoch+1}/{epochs}:")
         print(f"  Train Loss: {epoch_train_loss:.4f}")
         print(f"  Test Loss: {epoch_test_loss:.4f}")
         print(f"  R² Score: {r2:.4f}")
         print(f"  MAE: {mae:.4f}")
         
-        # Plotagem periódica
         if (epoch+1) % 10 == 0 or epoch == epochs-1:
             plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets)
     
@@ -237,16 +249,18 @@ def evaluate_model(model, test_dataset):
     all_preds = []
     all_targets = []
     
-    for i in range(len(test_dataset)):
-        sample = test_dataset[i]
-        coords = sample['coordinates'].unsqueeze(0)
-        pred = model(coords, denormalize=True).item()
-        true = sample['distance'].item() * test_dataset.dataset.normalize_params['distance']['std'] + test_dataset.dataset.normalize_params['distance']['mean']
-        
-        all_preds.append(pred)
-        all_targets.append(true)
+    with torch.no_grad():
+        for sample in test_dataset:
+            coords = sample['coordinates'].unsqueeze(0)  # Adiciona dimensão de batch
+            pred = model(coords, denormalize=True).item()
+            
+            true = sample['distance'].item() * test_dataset.normalize_params['distance']['std'] + \
+                   test_dataset.normalize_params['distance']['mean']
+            
+            all_preds.append(pred)
+            all_targets.append(true)
     
-    # Cálculo de métricas
+    # Restante da função permanece igual...
     mae = mean_absolute_error(all_targets, all_preds)
     mse = mean_squared_error(all_targets, all_preds)
     rmse = np.sqrt(mse)
@@ -270,14 +284,14 @@ def evaluate_model(model, test_dataset):
     plt.close()
     print("Gráfico de predições vs reais salvo em 'predictions_vs_actuals.png'")
 
-def predict_distance(model, pointcloud):
+def predict_distance(model, pointcloud, num_points=1000):
     print("\nFazendo predição para nova pointcloud...")
-    if len(pointcloud) > 1000:
-        pointcloud = pointcloud[np.random.choice(len(pointcloud), 1000, replace=False)]
+    if len(pointcloud) > num_points:
+        pointcloud = pointcloud[np.random.choice(len(pointcloud), num_points, replace=False)]
     
     coords = pointcloud[:, :3]
     coords = (coords - coords.mean(axis=0)) / (coords.std(axis=0) + 1e-8)
-    coords = torch.FloatTensor(coords).unsqueeze(0)
+    coords = torch.FloatTensor(coords).unsqueeze(0)  # Adiciona dimensão de batch
     
     with torch.no_grad():
         model.eval()
@@ -286,24 +300,31 @@ def predict_distance(model, pointcloud):
     print(f"Predição concluída: {pred.item():.2f}")
     return pred.item()
 
+
 if __name__ == "__main__":
-    data_path = os.path.join(os.path.dirname(__file__), "..", "data")
-    model_dir = data_path + "/models"
+    data_path = os.path.join(os.path.dirname(__file__), "..", "data", "training_data", "complete_training_data.npz")
+    model_dir = os.path.join(os.path.dirname(__file__), "..", "data", "models")
     os.makedirs(model_dir, exist_ok=True)
     
     try:
-        # Treinar e avaliar
-        model, test_dataset, metrics = train_model(data_path + "/training_data/complete_training_data.npz", epochs=NUM_EPOCHS, batch_size=64)
-        torch.save(model.state_dict(), model_dir + "/lane_distance_regressor.pth")
+        # Treina o modelo
+        model, test_dataset, metrics = train_model(
+            data_path,
+            epochs=NUM_EPOCHS,
+            batch_size=64,
+            num_points=1000
+        )
+        
+        # Salva o modelo
+        torch.save(model.state_dict(), os.path.join(model_dir, "lane_distance_regressor.pth"))
         print("Modelo treinado e salvo com sucesso.")
-
         
-        # Avaliação detalhada
+        # Avaliação
         evaluate_model(model, test_dataset)
-        
+
         # Exemplo de predição
-        sample_data = np.load(data_path + "/training_data/complete_training_data.npz", allow_pickle=True)
-        sample_pc = sample_data['pointclouds'][0]
+        sample_data = np.load(data_path, allow_pickle=True)
+        sample_pc = sample_data['train'].item()['pointclouds'][0]
         distance = predict_distance(model, sample_pc)
         print(f"\nExemplo de Predição: {distance:.2f} m")
         

@@ -294,7 +294,7 @@ def calculate_median_path(all_data_arrays, split_line=None, test_side='left', pl
         'split_params': {
             'split_line': split_line if split_line is not None else (0, 0), 
             'test_side': test_side, 
-            'creation_date': datetime.datetime.now().timestamp()
+            'creation_date': datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         }
     }
     
@@ -372,7 +372,7 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None, s
             
     if plot_dir:
         os.makedirs(plot_dir, exist_ok=True)
-        plt.savefig(f"{plot_dir}/cluster_lines_{datetime.datetime.now().timestamp()}.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{plot_dir}/cluster_lines_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.png", dpi=300, bbox_inches='tight')
         plt.close()
     else:
         plt.show()
