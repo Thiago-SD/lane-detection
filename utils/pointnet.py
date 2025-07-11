@@ -2,11 +2,12 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+import datetime
 import matplotlib.pyplot as plt
+from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
-NUM_EPOCHS = 1000
+NUM_EPOCHS = 2000
 
 class LaneDataset(Dataset):
     def __init__(self, npz_file, mode='train', num_points=1000):
@@ -156,7 +157,7 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000):
             
             epoch_train_loss += loss.item()
         
-        # Avaliação (igual ao original)
+        #Avaliação
         model.eval()
         epoch_test_loss = 0
         all_preds = []
@@ -172,7 +173,7 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000):
                 all_targets.extend(target.cpu().numpy().flatten())
                 epoch_test_loss += criterion(output, target).item()
         
-        # Cálculo de métricas (igual ao original)
+        # Cálculo de métricas 
         epoch_train_loss /= len(train_loader)
         epoch_test_loss /= len(test_loader)
         
@@ -195,10 +196,13 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000):
         
         if (epoch+1) % 10 == 0 or epoch == epochs-1:
             plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets)
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, timestamp)
     
     return model, test_dataset, (train_losses, test_losses, r2_scores, mae_scores)
 
-def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets):
+def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, timestamp=''):
     plt.figure(figsize=(15, 10))
     
     # Subplot para perdas
@@ -239,9 +243,10 @@ def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, al
     plt.grid(True)
     
     plt.tight_layout()
-    plt.savefig('training_metrics.png')
+    file_name = f"training_metrics_{timestamp}.png"
+    plt.savefig(file_name)
     plt.close()
-    print("Gráficos de métricas salvos em 'training_metrics.png'")
+    print(f"Gráficos de métricas salvos em {file_name}")
 
 def evaluate_model(model, test_dataset):
     print("\nAvaliando modelo no conjunto de teste...")
@@ -280,9 +285,11 @@ def evaluate_model(model, test_dataset):
     plt.ylabel('Predições')
     plt.title('Predições vs Valores Reais')
     plt.grid(True)
-    plt.savefig('predictions_vs_actuals.png')
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_name = f"predictions_vs_actuals_{timestamp}.png"
+    plt.savefig(file_name)
     plt.close()
-    print("Gráfico de predições vs reais salvo em 'predictions_vs_actuals.png'")
+    print(f"Gráfico de predições vs reais salvo em {file_name}")
 
 def predict_distance(model, pointcloud, num_points=1000):
     print("\nFazendo predição para nova pointcloud...")
