@@ -1,4 +1,5 @@
 import os
+import shutil
 import numpy as np
 import torch
 import torch.nn as nn
@@ -7,7 +8,8 @@ import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
-NUM_EPOCHS = 2000
+NUM_EPOCHS = 3000
+NUM_POINTS = 5000
 
 class LaneDataset(Dataset):
     def __init__(self, npz_file, mode='train', num_points=1000):
@@ -65,19 +67,19 @@ class PointNetPP(nn.Module):
         self.register_buffer('norm_std', torch.tensor(norm_std))
         
         self.mlp1 = nn.Sequential(
-            nn.Linear(3, 64),
-            nn.BatchNorm1d(64),
+            nn.Linear(3, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Linear(64, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(512, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU()
         )
         
         self.mlp2 = nn.Sequential(
-            nn.Linear(128, 256),
-            nn.BatchNorm1d(256),
+            nn.Linear(512, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Linear(256, 512),
+            nn.Linear(512, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(),
             nn.Linear(512, 1)
@@ -95,8 +97,41 @@ class PointNetPP(nn.Module):
         if denormalize:
             return x * self.norm_std + self.norm_mean
         return x
+    
 
-def train_model(data_path, epochs=50, batch_size=32, num_points=1000):
+def save_checkpoint(epoch, model, optimizer, train_losses, test_losses, r2_scores, mae_scores, checkpoint_dir):
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'train_losses': train_losses,
+        'test_losses': test_losses,
+        'r2_scores': r2_scores,
+        'mae_scores': mae_scores
+    }
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(checkpoint_dir, 'checkpoint_pointnet.pth')
+    torch.save(checkpoint, checkpoint_path)
+    print(f"Checkpoint salvo em {checkpoint_dir}")
+
+def load_latest_checkpoint(checkpoint_dir, model, optimizer):
+
+    checkpoint_path = os.path.join(checkpoint_dir, 'checkpoint_pointnet.pth')
+    
+    checkpoint = torch.load(checkpoint_path, weights_only=True)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    print(f"Checkpoint carregado: {checkpoint_path} (época {checkpoint['epoch'] + 1})")
+    
+    return (
+        checkpoint['epoch'],
+        checkpoint['train_losses'],
+        checkpoint['test_losses'],
+        checkpoint['r2_scores'],
+        checkpoint['mae_scores']
+    )
+
+def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=None):
     # Carrega o dataset completo para normalização
     full_data = np.load(data_path, allow_pickle=True)
     train_data = full_data['train'].item()
@@ -134,15 +169,22 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000):
     # Restante da função permanece igual...
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
-    
+
     train_losses = []
     test_losses = []
     r2_scores = []
     mae_scores = []
-    
-    print("\nIniciando treinamento...")
-    for epoch in range(epochs):
-        # Treino
+
+    checkpoint_dir = os.path.join(model_dir, "checkpoints")
+    start_epoch = 0
+    train_losses, test_losses, r2_scores, mae_scores = [], [], [], []
+
+    if os.path.exists(os.path.join(checkpoint_dir, 'checkpoint_pointnet.pth')):
+        start_epoch, train_losses, test_losses, r2_scores, mae_scores = load_latest_checkpoint(checkpoint_dir, model, optimizer)
+        print(f"Retomando treinamento da época {start_epoch + 1}:")
+
+    print("Iniciando treinamento...")
+    for epoch in range(start_epoch, epochs):
         model.train()
         epoch_train_loss = 0
         for batch in train_loader:
@@ -195,14 +237,14 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000):
         print(f"  MAE: {mae:.4f}")
         
         if (epoch+1) % 10 == 0 or epoch == epochs-1:
-            plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets)
+            plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, plot_dir=model_dir)
+            save_checkpoint(epoch, model, optimizer, train_losses, test_losses, r2_scores, mae_scores, checkpoint_dir)
 
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, timestamp)
+    plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, plot_dir=model_dir)
     
     return model, test_dataset, (train_losses, test_losses, r2_scores, mae_scores)
 
-def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, timestamp=''):
+def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, plot_dir = None):
     plt.figure(figsize=(15, 10))
     
     # Subplot para perdas
@@ -241,14 +283,18 @@ def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, al
     plt.xlabel('Prediction Error')
     plt.ylabel('Frequency')
     plt.grid(True)
-    
     plt.tight_layout()
-    file_name = f"training_metrics_{timestamp}.png"
+
+    if plot_dir:
+        file_name = plot_dir + f"/training_metrics.png"
+    else:
+        file_name = f"training_metrics.png"
+    
     plt.savefig(file_name)
     plt.close()
     print(f"Gráficos de métricas salvos em {file_name}")
 
-def evaluate_model(model, test_dataset):
+def evaluate_model(model, test_dataset, plot_dir = None):
     print("\nAvaliando modelo no conjunto de teste...")
     model.eval()
     all_preds = []
@@ -285,8 +331,12 @@ def evaluate_model(model, test_dataset):
     plt.ylabel('Predições')
     plt.title('Predições vs Valores Reais')
     plt.grid(True)
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_name = f"predictions_vs_actuals_{timestamp}.png"
+
+    if plot_dir:
+        file_name = plot_dir + f"/predictions_vs_actuals.png"
+    else:
+        file_name = f"predictions_vs_actuals.png"
+
     plt.savefig(file_name)
     plt.close()
     print(f"Gráfico de predições vs reais salvo em {file_name}")
@@ -315,24 +365,30 @@ if __name__ == "__main__":
     
     try:
         # Treina o modelo
+        # Aumentar o número de épocas e pontos para treino, e aumentar o tamanho da rede
         model, test_dataset, metrics = train_model(
             data_path,
             epochs=NUM_EPOCHS,
             batch_size=64,
-            num_points=1000
+            num_points=NUM_POINTS,
+            model_dir=model_dir
         )
         
         # Salva o modelo
         torch.save(model.state_dict(), os.path.join(model_dir, "lane_distance_regressor.pth"))
         print("Modelo treinado e salvo com sucesso.")
-        
+
+        checkpoint_dir = os.path.join(model_dir, "checkpoints")
+        if os.path.exists(checkpoint_dir):
+            shutil.rmtree(checkpoint_dir)
+
         # Avaliação
-        evaluate_model(model, test_dataset)
+        evaluate_model(model, test_dataset, plot_dir=model_dir)
 
         # Exemplo de predição
         sample_data = np.load(data_path, allow_pickle=True)
         sample_pc = sample_data['train'].item()['pointclouds'][0]
-        distance = predict_distance(model, sample_pc)
+        distance = predict_distance(model, sample_pc, num_points=NUM_POINTS)
         print(f"\nExemplo de Predição: {distance:.2f} m")
         
     except Exception as e:
