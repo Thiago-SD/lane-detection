@@ -5,11 +5,100 @@ import torch
 import torch.nn as nn
 import datetime
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+from numpy import inf
 from torch.utils.data import Dataset, DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
 NUM_EPOCHS = 3000
 NUM_POINTS = 5000
+PATIENCE = 40 #Critério para parada prévia, mantenha em 0 para desativar
+MIN_DELTA = 0.0001
+MONITOR_METRIC = 'test_loss' # Pode mudar para 'r2_score', 'test_mae', etc.
+
+class EarlyStopping:
+    def __init__(self, patience=20, min_delta=0.001, mode='min', monitor_metric='test_loss', checkpoint_dir=None):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.monitor_metric = monitor_metric
+        self.checkpoint_dir = checkpoint_dir
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.best_metrics = {}
+        
+        # Mapeamento de métricas e seus modos ideais
+        self.metric_modes = {
+            'test_loss': 'min',
+            'test_mae': 'min', 
+            'test_rmse': 'min',
+            'r2_score': 'max',
+            'loss_gap': 'min'
+        }
+        
+        if self.monitor_metric not in self.metric_modes:
+            raise ValueError(f"Métrica {monitor_metric} não suportada. Use: {list(self.metric_modes.keys())}")
+    
+    def __call__(self, current_metrics, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores):
+        if self.monitor_metric not in current_metrics:
+            raise ValueError(f"Métrica {self.monitor_metric} não encontrada nas métricas fornecidas")
+        
+        current_score = current_metrics[self.monitor_metric]
+        expected_mode = self.metric_modes[self.monitor_metric]
+        
+        # Ajusta o score baseado no modo esperado
+        if expected_mode == 'min':
+            current_score = -current_score  # Convertemos para maximização
+        
+        if self.best_score is None:
+            self.best_score = current_score
+            self._save_checkpoint(current_metrics, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores)
+            return False
+        
+        # Verifica se há melhoria
+        if current_score > self.best_score + self.min_delta:
+            self.best_score = current_score
+            self.counter = 0
+            self._save_checkpoint(current_metrics, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores)
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        return self.early_stop
+    
+    def _save_checkpoint(self, current_metrics, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores):
+            save_checkpoint(
+            epoch=current_metrics['epoch'],
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            train_losses=train_losses,
+            test_losses=test_losses,
+            r2_scores=r2_scores,
+            mae_scores=mae_scores,
+            rmse_scores=rmse_scores,
+            checkpoint_dir=self.checkpoint_dir,
+        )
+            self.best_metrics = current_metrics.copy()
+    
+    def load_best_model(self, model, optimizer=None, scheduler=None):
+        if self.checkpoint_dir:
+            checkpoint_path = os.path.join(self.checkpoint_dir, "checkpoint_pointnet.pth")
+            if os.path.exists(checkpoint_path):
+                checkpoint = torch.load(checkpoint_path, weights_only=False)
+                model.load_state_dict(checkpoint['model_state_dict'])
+                
+                if optimizer and 'optimizer_state_dict' in checkpoint:
+                    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                
+                if scheduler and checkpoint['scheduler_state_dict']:
+                    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                return True
+        return False
 
 class LaneDataset(Dataset):
     def __init__(self, npz_file, mode='train', num_points=1000):
@@ -62,7 +151,6 @@ class LaneDataset(Dataset):
 class PointNetPP(nn.Module):
     def __init__(self, norm_mean=0.0, norm_std=1.0):
         super().__init__()
-        print("Inicializando modelo PointNet++...")
         self.register_buffer('norm_mean', torch.tensor(norm_mean))
         self.register_buffer('norm_std', torch.tensor(norm_std))
         
@@ -84,7 +172,6 @@ class PointNetPP(nn.Module):
             nn.ReLU(),
             nn.Linear(512, 1)
         )
-        print("Modelo inicializado com sucesso.")
     
     def forward(self, x, denormalize=False):
         batch_size, num_points, _ = x.shape
@@ -99,36 +186,37 @@ class PointNetPP(nn.Module):
         return x
     
 
-def save_checkpoint(epoch, model, optimizer, train_losses, test_losses, r2_scores, mae_scores, checkpoint_dir):
+def save_checkpoint(epoch, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores, checkpoint_dir):
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
         'train_losses': train_losses,
         'test_losses': test_losses,
         'r2_scores': r2_scores,
-        'mae_scores': mae_scores
+        'mae_scores': mae_scores,
+        'rmse_scores': rmse_scores,
     }
     os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint_path = os.path.join(checkpoint_dir, 'checkpoint_pointnet.pth')
     torch.save(checkpoint, checkpoint_path)
-    print(f"Checkpoint salvo em {checkpoint_dir}")
 
-def load_latest_checkpoint(checkpoint_dir, model, optimizer):
-
+def load_latest_checkpoint(checkpoint_dir, model, optimizer, scheduler):
     checkpoint_path = os.path.join(checkpoint_dir, 'checkpoint_pointnet.pth')
     
-    checkpoint = torch.load(checkpoint_path, weights_only=True)
+    checkpoint = torch.load(checkpoint_path, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    print(f"Checkpoint carregado: {checkpoint_path} (época {checkpoint['epoch'] + 1})")
+    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     
     return (
         checkpoint['epoch'],
         checkpoint['train_losses'],
         checkpoint['test_losses'],
         checkpoint['r2_scores'],
-        checkpoint['mae_scores']
+        checkpoint['mae_scores'],
+        checkpoint['rmse_scores']
     )
 
 def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=None):
@@ -165,31 +253,42 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=
         norm_mean=normalize_params['distance']['mean'],
         norm_std=normalize_params['distance']['std']
     )
-    
-    # Restante da função permanece igual...
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=10, factor=0.5, min_lr=1e-6)
     criterion = nn.MSELoss()
 
-    train_losses = []
-    test_losses = []
-    r2_scores = []
-    mae_scores = []
-
     checkpoint_dir = os.path.join(model_dir, "checkpoints")
+    best_checkpoint_dir = os.path.join(checkpoint_dir, "best_checkpoint")
+    train_losses, test_losses, r2_scores, mae_scores, rmse_scores = [], [], [], [], []
+
     start_epoch = 0
-    train_losses, test_losses, r2_scores, mae_scores = [], [], [], []
+
+    early_stopping = None
+    if PATIENCE > 0:
+        early_stopping = EarlyStopping(
+            patience=PATIENCE,
+            min_delta=MIN_DELTA,
+            monitor_metric=MONITOR_METRIC,  
+            mode='min',
+            checkpoint_dir=best_checkpoint_dir,
+        )
 
     if os.path.exists(os.path.join(checkpoint_dir, 'checkpoint_pointnet.pth')):
-        start_epoch, train_losses, test_losses, r2_scores, mae_scores = load_latest_checkpoint(checkpoint_dir, model, optimizer)
-        print(f"Retomando treinamento da época {start_epoch + 1}:")
+        start_epoch, train_losses, test_losses, r2_scores, mae_scores, rmse_scores = load_latest_checkpoint(checkpoint_dir, model, optimizer, scheduler)
+        print(f"Checkpoint carregado: {checkpoint_dir} (época {start_epoch + 1})\nRetomando o treinamento...")
 
     print("Iniciando treinamento...")
     for epoch in range(start_epoch, epochs):
+        # Treinamento
         model.train()
         epoch_train_loss = 0
-        for batch in train_loader:
+
+        print('\n')
+        train_pbar = tqdm(train_loader, desc=f"Época {epoch+1}/{epochs} [Treino]", unit="batch", ascii=True)
+
+        for batch in train_pbar:
             coords, target = batch['coordinates'], batch['distance']
-            coords = coords.view(len(target), -1, 3)  # Reshape para (batch_size, num_points, 3)
+            coords = coords.view(len(target), -1, 3)
             
             optimizer.zero_grad()
             output = model(coords)
@@ -198,22 +297,41 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=
             optimizer.step()
             
             epoch_train_loss += loss.item()
-        
-        #Avaliação
+
+            train_pbar.set_postfix({
+                'batch_loss': f'{loss.item():.4f}',
+                'epoch_loss': f'{epoch_train_loss/len(train_loader):.4f}',
+                'lr': f'{optimizer.param_groups[0]["lr"]:.2e}'
+            })
+
+        train_pbar.close()
+
+        # Avaliação
         model.eval()
         epoch_test_loss = 0
         all_preds = []
         all_targets = []
-        
+
+        print('\n')
+        test_pbar = tqdm(test_loader, desc=f"Época {epoch+1}/{epochs} [Teste]", unit="batch", ascii=True)
+
         with torch.no_grad():
-            for batch in test_loader:
+            for batch in test_pbar:
                 coords, target = batch['coordinates'], batch['distance']
                 coords = coords.view(len(target), -1, 3)
                 output = model(coords)
                 
                 all_preds.extend(output.cpu().numpy().flatten())
                 all_targets.extend(target.cpu().numpy().flatten())
-                epoch_test_loss += criterion(output, target).item()
+                batch_loss = criterion(output, target).item()
+                epoch_test_loss += batch_loss
+
+                test_pbar.set_postfix({
+                    'batch_loss': f'{batch_loss:.4f}',
+                    'epoch_loss': f'{epoch_test_loss/len(test_loader):.4f}'
+                })
+
+        test_pbar.close()
         
         # Cálculo de métricas 
         epoch_train_loss /= len(train_loader)
@@ -224,11 +342,32 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=
         
         r2 = r2_score(all_targets, all_preds)
         mae = mean_absolute_error(all_targets, all_preds)
+        rmse = np.sqrt(mean_squared_error(all_targets, all_preds))
         
         train_losses.append(epoch_train_loss)
         test_losses.append(epoch_test_loss)
         r2_scores.append(r2)
         mae_scores.append(mae)
+        rmse_scores.append(rmse)
+
+        scheduler.step(epoch_test_loss)
+
+        current_metrics = {
+            'epoch': epoch + 1,
+            'train_loss': epoch_train_loss / len(train_loader),
+            'test_loss': epoch_test_loss / len(test_loader),
+            'test_mae': mae,
+            'test_rmse': rmse,
+            'r2_score': r2,
+            'loss_gap': abs(epoch_train_loss - epoch_test_loss) / (epoch_train_loss + 1e-8),
+            'learning_rate': optimizer.param_groups[0]['lr']
+        }
+
+        if early_stopping is not None:
+            if early_stopping(current_metrics, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores):
+                print("Early stopping acionado!")
+                break
+            
         
         print(f"\nEpoch {epoch+1}/{epochs}:")
         print(f"  Train Loss: {epoch_train_loss:.4f}")
@@ -238,11 +377,14 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=
         
         if (epoch+1) % 10 == 0 or epoch == epochs-1:
             plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, plot_dir=model_dir)
-            save_checkpoint(epoch, model, optimizer, train_losses, test_losses, r2_scores, mae_scores, checkpoint_dir)
+            save_checkpoint(epoch, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores, checkpoint_dir)
+            print(f"Checkpoint salvo em {checkpoint_dir}")
 
     plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, plot_dir=model_dir)
+
+    early_stopping.load_best_model(model, optimizer)
     
-    return model, test_dataset, (train_losses, test_losses, r2_scores, mae_scores)
+    return model, test_dataset, (train_losses, test_losses, r2_scores, mae_scores, rmse_scores)
 
 def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, plot_dir = None):
     plt.figure(figsize=(15, 10))
@@ -365,7 +507,6 @@ if __name__ == "__main__":
     
     try:
         # Treina o modelo
-        # Aumentar o número de épocas e pontos para treino, e aumentar o tamanho da rede
         model, test_dataset, metrics = train_model(
             data_path,
             epochs=NUM_EPOCHS,

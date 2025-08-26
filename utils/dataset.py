@@ -229,7 +229,6 @@ def split_by_line(points, line_params, test_side='above'):
     return train_mask, test_mask
 
 def calculate_median_path(all_data_arrays, split_line=None, test_side='left', plot_dir=None, n_clusters=100):
-    """Calcula o caminho médio usando splines lineares paramétricas por cluster."""
     # Concatena e processa os dados
     all_data = np.concatenate(all_data_arrays)
     points = np.array([[item['x'], item['y']] for item in all_data])
