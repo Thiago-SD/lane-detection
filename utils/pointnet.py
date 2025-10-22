@@ -13,8 +13,8 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
 NUM_EPOCHS = 3000
 NUM_POINTS = 5000
-PATIENCE = 40 #Critério para parada prévia, mantenha em 0 para desativar
-MIN_DELTA = 0.0001
+PATIENCE = 0 #Critério para parada prévia, mantenha em 0 para desativar
+MIN_DELTA = 0.001
 MONITOR_METRIC = 'test_loss' # Pode mudar para 'r2_score', 'test_mae', etc.
 
 class EarlyStopping:
@@ -42,33 +42,99 @@ class EarlyStopping:
         
         if self.monitor_metric not in self.metric_modes:
             raise ValueError(f"Métrica {monitor_metric} não suportada. Use: {list(self.metric_modes.keys())}")
+        
+        self._load_best_score_from_checkpoint()
     
     def __call__(self, current_metrics, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores):
         if self.monitor_metric not in current_metrics:
             raise ValueError(f"Métrica {self.monitor_metric} não encontrada nas métricas fornecidas")
-        
+                
         current_score = current_metrics[self.monitor_metric]
         expected_mode = self.metric_modes[self.monitor_metric]
-        
-        # Ajusta o score baseado no modo esperado
-        if expected_mode == 'min':
-            current_score = -current_score  # Convertemos para maximização
         
         if self.best_score is None:
             self.best_score = current_score
             self._save_checkpoint(current_metrics, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores)
-            return False
-        
-        # Verifica se há melhoria
-        if current_score > self.best_score + self.min_delta:
-            self.best_score = current_score
-            self.counter = 0
-            self._save_checkpoint(current_metrics, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores)
+            print(f"\nMelhor pontuação de {self.monitor_metric} inicial: {self.best_score:.6f}")
+            self.early_stop = False
         else:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.early_stop = True
+            # Verifica se há melhoria
+            if expected_mode == 'min':
+                if current_score < self.best_score - self.min_delta:
+                    print(f"\nMelhoria detectada, pontuação de {self.monitor_metric} anterior: {self.best_score:.6f} -> pontuação atual: {current_score:.6f}")
+                    self.best_score = current_score
+                    self.counter = 0
+                    self._save_checkpoint(current_metrics, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores)
+            elif expected_mode == 'max':
+                if current_score > self.best_score + self.min_delta:
+                    print(f"\nMelhoria detectada, pontuação de {self.monitor_metric} anterior: {self.best_score:.6f} -> pontuação atual: {current_score:.6f}")
+                    self.best_score = current_score
+                    self.counter = 0
+                    self._save_checkpoint(current_metrics, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores)
+            else:    
+                self.counter += 1
+                if self.counter == self.patience:
+                    self.early_stop = True
+
         return self.early_stop
+
+        
+    
+    def _load_best_score_from_checkpoint(self):
+        #Carrega o melhor score de um checkpoint existente ao retomar treinamento
+        checkpoint_path = os.path.join(self.checkpoint_dir, "checkpoint_pointnet.pth")
+        if os.path.exists(checkpoint_path):
+            try:
+                checkpoint = torch.load(checkpoint_path, weights_only=False, map_location='cpu')
+                print(f"\nCheckpoint de melhor modelo encontrado em {checkpoint_path}")
+                
+                # Encontra o melhor valor histórico da métrica monitorada
+                if self.monitor_metric == 'r2_score' and 'r2_scores' in checkpoint and checkpoint['r2_scores']:
+                    best_value = max(checkpoint['r2_scores'])
+                    print(f"  - Melhor R² Score histórico: {best_value:.6f}")
+                elif self.monitor_metric == 'test_loss' and 'test_losses' in checkpoint and checkpoint['test_losses']:
+                    best_value = min(checkpoint['test_losses'])
+                    print(f"  - Melhor Test Loss histórico: {best_value:.6f}")
+                elif self.monitor_metric == 'test_mae' and 'mae_scores' in checkpoint and checkpoint['mae_scores']:
+                    best_value = min(checkpoint['mae_scores'])
+                    print(f"  - Melhor MAE histórico: {best_value:.6f}")
+                elif self.monitor_metric == 'test_rmse' and 'rmse_scores' in checkpoint and checkpoint['rmse_scores']:
+                    best_value = min(checkpoint['rmse_scores'])
+                    print(f"  - Melhor RMSE histórico: {best_value:.6f}")
+                else:
+                    # Fallback: usa o valor mais recente se disponível
+                    if self.monitor_metric in checkpoint:
+                        best_value = checkpoint[self.monitor_metric]
+                        print(f"  - Valor mais recente da métrica: {best_value:.6f}")
+                    else:
+                        best_value = None
+                        print("  - Métrica não encontrada no checkpoint")
+                
+                if best_value is not None:
+                    self.best_score = best_value
+                    # Ajusta para maximização se necessário
+                    expected_mode = self.metric_modes[self.monitor_metric]
+                    print(f"  - Best_score configurado para: {best_value:.6f} (modo: {expected_mode})")
+                    
+                    # Carrega também as melhores métricas
+                    if 'epoch' in checkpoint:
+                        self.best_metrics = {
+                            'epoch': checkpoint['epoch'],
+                            'train_loss': checkpoint['train_losses'][-1] if checkpoint['train_losses'] else 0,
+                            'test_loss': checkpoint['test_losses'][-1] if checkpoint['test_losses'] else 0,
+                            'r2_score': checkpoint['r2_scores'][-1] if checkpoint['r2_scores'] else 0,
+                            'test_mae': checkpoint['mae_scores'][-1] if checkpoint['mae_scores'] else 0,
+                            'test_rmse': checkpoint['rmse_scores'][-1] if checkpoint['rmse_scores'] else 0,
+                        }
+                        print(f"  - Época do melhor modelo: {checkpoint['epoch']}")
+                else:
+                    print("  - Nenhum valor válido encontrado no checkpoint")
+                        
+            except Exception as e:
+                print(f"Erro ao carregar melhor score do checkpoint: {e}")
+        else:
+            print(f"Nenhum checkpoint de melhor modelo encontrado em {checkpoint_path}. Iniciando do zero.")
+
     
     def _save_checkpoint(self, current_metrics, model, optimizer, scheduler, train_losses, test_losses, r2_scores, mae_scores, rmse_scores):
             save_checkpoint(
@@ -264,14 +330,13 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=
     start_epoch = 0
 
     early_stopping = None
-    if PATIENCE > 0:
-        early_stopping = EarlyStopping(
-            patience=PATIENCE,
-            min_delta=MIN_DELTA,
-            monitor_metric=MONITOR_METRIC,  
-            mode='min',
-            checkpoint_dir=best_checkpoint_dir,
-        )
+    early_stopping = EarlyStopping(
+        patience=PATIENCE,
+        min_delta=MIN_DELTA,
+        monitor_metric=MONITOR_METRIC,  
+        mode='min',
+        checkpoint_dir=best_checkpoint_dir,
+    )
 
     if os.path.exists(os.path.join(checkpoint_dir, 'checkpoint_pointnet.pth')):
         start_epoch, train_losses, test_losses, r2_scores, mae_scores, rmse_scores = load_latest_checkpoint(checkpoint_dir, model, optimizer, scheduler)
@@ -354,8 +419,8 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=
 
         current_metrics = {
             'epoch': epoch + 1,
-            'train_loss': epoch_train_loss / len(train_loader),
-            'test_loss': epoch_test_loss / len(test_loader),
+            'train_loss': epoch_train_loss,
+            'test_loss': epoch_test_loss,
             'test_mae': mae,
             'test_rmse': rmse,
             'r2_score': r2,
@@ -434,7 +499,7 @@ def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, al
     
     plt.savefig(file_name)
     plt.close()
-    print(f"Gráficos de métricas salvos em {file_name}")
+    print(f"\nGráficos de métricas salvos em {file_name}")
 
 def evaluate_model(model, test_dataset, plot_dir = None):
     print("\nAvaliando modelo no conjunto de teste...")
