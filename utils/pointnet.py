@@ -531,7 +531,7 @@ def evaluate_model(model, test_dataset, plot_dir = None):
     print(f"R² Score: {r2:.4f}")
     
     # Plot de resultados
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(50, 25))
     plt.scatter(all_targets, all_preds, alpha=0.5)
     plt.plot([min(all_targets), max(all_targets)], [min(all_targets), max(all_targets)], 'r--')
     plt.xlabel('Valores Reais')
@@ -572,7 +572,7 @@ if __name__ == "__main__":
     
     try:
         # Treina o modelo
-        model, test_dataset, metrics = train_model(
+        model, test_dataset, (train_losses, test_losses, r2_scores, mae_scores, rmse_scores) = train_model(
             data_path,
             epochs=NUM_EPOCHS,
             batch_size=64,
@@ -580,9 +580,27 @@ if __name__ == "__main__":
             model_dir=model_dir
         )
         
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
         # Salva o modelo
-        torch.save(model.state_dict(), os.path.join(model_dir, "lane_distance_regressor.pth"))
-        print("Modelo treinado e salvo com sucesso.")
+        torch.save(model.state_dict(), os.path.join(model_dir, f"lane_distance_regressor_{timestamp}.pth"))
+        print(f"Modelo treinado e salvo com sucesso no diretório {model_dir}\n")
+
+        #Armazenando métricas:
+        metrics_file = os.path.join(model_dir, f"training_metrics_{timestamp}.npz")
+
+        #Salva no arquivo NPZ
+        np.savez(metrics_file,
+                 train_losses=np.array(train_losses),
+                 test_losses=np.array(test_losses),
+                 r2_scores=np.array(r2_scores),
+                 mae_scores=np.array(mae_scores),
+                 rmse_scores=np.array(rmse_scores),
+                 timestamp=timestamp,
+                 num_epochs=len(train_losses),
+                 final_epoch=len(train_losses))
+        
+        print(f"Métricas de treinamento salvas em: {metrics_file}")
 
         checkpoint_dir = os.path.join(model_dir, "checkpoints")
         if os.path.exists(checkpoint_dir):
