@@ -36,8 +36,7 @@ class EarlyStopping:
             'test_loss': 'min',
             'test_mae': 'min', 
             'test_rmse': 'min',
-            'r2_score': 'max',
-            'loss_gap': 'min'
+            'r2_score': 'max'
         }
         
         if self.monitor_metric not in self.metric_modes:
@@ -319,6 +318,10 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=
         norm_mean=normalize_params['distance']['mean'],
         norm_std=normalize_params['distance']['std']
     )
+    best_model = PointNetPP(
+        norm_mean=normalize_params['distance']['mean'],
+        norm_std=normalize_params['distance']['std']
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=10, factor=0.5, min_lr=1e-6)
     criterion = nn.MSELoss()
@@ -424,7 +427,6 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=
             'test_mae': mae,
             'test_rmse': rmse,
             'r2_score': r2,
-            'loss_gap': abs(epoch_train_loss - epoch_test_loss) / (epoch_train_loss + 1e-8),
             'learning_rate': optimizer.param_groups[0]['lr']
         }
 
@@ -447,9 +449,9 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=
 
     plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, plot_dir=model_dir)
 
-    early_stopping.load_best_model(model, optimizer)
+    early_stopping.load_best_model(best_model, optimizer)
     
-    return model, test_dataset, (train_losses, test_losses, r2_scores, mae_scores, rmse_scores)
+    return best_model, model, test_dataset, (train_losses, test_losses, r2_scores, mae_scores, rmse_scores)
 
 def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, plot_dir = None):
     plt.figure(figsize=(15, 10))
@@ -572,7 +574,7 @@ if __name__ == "__main__":
     
     try:
         # Treina o modelo
-        model, test_dataset, (train_losses, test_losses, r2_scores, mae_scores, rmse_scores) = train_model(
+        best_model, model, test_dataset, (train_losses, test_losses, r2_scores, mae_scores, rmse_scores) = train_model(
             data_path,
             epochs=NUM_EPOCHS,
             batch_size=64,
@@ -583,8 +585,9 @@ if __name__ == "__main__":
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # Salva o modelo
-        torch.save(model.state_dict(), os.path.join(model_dir, f"lane_distance_regressor_{timestamp}.pth"))
-        print(f"Modelo treinado e salvo com sucesso no diretório {model_dir}\n")
+        torch.save(model.state_dict(), os.path.join(model_dir, f"latest_lane_distance_regressor_{timestamp}.pth"))
+        torch.save(best_model.state_dict(), os.path.join(model_dir, f"best_lane_distance_regressor_{timestamp}.pth"))
+        print(f"Modelos treinados e salvos com sucesso no diretório {model_dir}\n")
 
         #Armazenando métricas:
         metrics_file = os.path.join(model_dir, f"training_metrics_{timestamp}.npz")
