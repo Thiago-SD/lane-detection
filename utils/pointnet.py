@@ -10,12 +10,14 @@ from numpy import inf
 from torch.utils.data import Dataset, DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from torchviz import make_dot
 
 NUM_EPOCHS = 3000
-NUM_POINTS = 5000
+NUM_POINTS = 8000
 PATIENCE = 0 #Critério para parada prévia, mantenha em 0 para desativar
 MIN_DELTA = 0.001
 MONITOR_METRIC = 'test_loss' # Pode mudar para 'r2_score', 'test_mae', etc.
+OPTIMIZER_LR = 0.01 #Learning rate inicial do otimizador
 
 class EarlyStopping:
     def __init__(self, patience=20, min_delta=0.001, mode='min', monitor_metric='test_loss', checkpoint_dir=None):
@@ -322,7 +324,7 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=
         norm_mean=normalize_params['distance']['mean'],
         norm_std=normalize_params['distance']['std']
     )
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=OPTIMIZER_LR)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=10, factor=0.5, min_lr=1e-6)
     criterion = nn.MSELoss()
 
@@ -454,7 +456,7 @@ def train_model(data_path, epochs=50, batch_size=32, num_points=1000, model_dir=
     return best_model, model, test_dataset, (train_losses, test_losses, r2_scores, mae_scores, rmse_scores)
 
 def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, all_targets, plot_dir = None):
-    plt.figure(figsize=(15, 10))
+    plt.figure(figsize=(20, 10))
     
     # Subplot para perdas
     plt.subplot(2, 2, 1)
@@ -503,7 +505,7 @@ def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, al
     plt.close()
     print(f"\nGráficos de métricas salvos em {file_name}")
 
-def evaluate_model(model, test_dataset, plot_dir = None):
+def evaluate_model(model, test_dataset, plot_dir = None, timestamp = None):
     print("\nAvaliando modelo no conjunto de teste...")
     model.eval()
     all_preds = []
@@ -533,7 +535,7 @@ def evaluate_model(model, test_dataset, plot_dir = None):
     print(f"R² Score: {r2:.4f}")
     
     # Plot de resultados
-    plt.figure(figsize=(50, 25))
+    plt.figure(figsize=(15, 10))
     plt.scatter(all_targets, all_preds, alpha=0.5)
     plt.plot([min(all_targets), max(all_targets)], [min(all_targets), max(all_targets)], 'r--')
     plt.xlabel('Valores Reais')
@@ -542,13 +544,33 @@ def evaluate_model(model, test_dataset, plot_dir = None):
     plt.grid(True)
 
     if plot_dir:
-        file_name = plot_dir + f"/predictions_vs_actuals.png"
+        file_name = plot_dir + f"/predictions_vs_actuals_{timestamp}.png"
     else:
-        file_name = f"predictions_vs_actuals.png"
+        file_name = f"predictions_vs_actuals_{timestamp}.png"
 
     plt.savefig(file_name)
     plt.close()
     print(f"Gráfico de predições vs reais salvo em {file_name}")
+
+     # Pega uma amostra do dataset de teste para visualizar o forward pass
+    sample = test_dataset[0]
+    coords = sample['coordinates'].unsqueeze(0)
+    
+    # Forward pass para capturar o grafo computacional
+    output = model(coords, denormalize=True)
+    
+    # Cria a visualização
+    dot = make_dot(output, params=dict(model.named_parameters()))
+    
+    # Salva o gráfico
+    if plot_dir:
+        model_viz_file = plot_dir + f"/model_architecture_{timestamp}"
+    else:
+        model_viz_file = f"model_architecture_{timestamp}"
+    
+    # Salva em formato PNG e DOT
+    dot.render(model_viz_file, format='png', cleanup=True)
+    print(f"Visualização da arquitetura do modelo salva em {model_viz_file}.png")
 
 def predict_distance(model, pointcloud, num_points=1000):
     print("\nFazendo predição para nova pointcloud...")
@@ -610,7 +632,7 @@ if __name__ == "__main__":
             shutil.rmtree(checkpoint_dir)
 
         # Avaliação
-        evaluate_model(model, test_dataset, plot_dir=model_dir)
+        evaluate_model(best_model, test_dataset, plot_dir=model_dir, timestamp=timestamp)
 
         # Exemplo de predição
         sample_data = np.load(data_path, allow_pickle=True)
