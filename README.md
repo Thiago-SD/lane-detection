@@ -35,7 +35,7 @@ Após a configuração do ambiente, será necessário preparar os dados que ser�
    
 ![image](https://github.com/user-attachments/assets/d557eea4-bed6-4553-9574-b6b9e4d6100f)
 
-6. Após isso, executar o script preprocessor.py com `make preprocess.py`
+6. Após isso, executar o script preprocessor.py com `make preprocess`
 7. Quando a execução for finalizada, os dados de treino se encontrarão no dataset entitulado complete_training_data.npz no diretório training_data, como em anexo:
 
 ![image](https://github.com/user-attachments/assets/79730d22-d18b-443b-b71e-4947e4f26b00)
