@@ -2,12 +2,23 @@
 
 ## 1 - Configuração de Ambiente
 
-Para realizar a criação de um ambiente virtual e instalação das dependências necessárias para a execução do módulo, favor seguir os passos após clonar o repositório
-1. Crie um ambiente virtual com o comando: `python3 -m venv pointnet_env`
-2. Ative o ambiente virtual:
-    No Linux/macOS: `source pointnet_env/bin/activate`
-    No Windows: `pointnet_env\Scripts\activate`
-3. Instale as dependências com o comando: `pip install -r requirements.txt`
+Para realizar a criação de um ambiente virtual e instalação das dependências necessárias para a execução do módulo, favor seguir os passos após clonar o repositório. O projeto conta com um 
+arquivo Makefile para deixar a configuração de ambiente conveniente, os comandos são listados a seguir:
+
+1.  make all        - Setup completo (venv + dependências + testes)
+2.  make install    - Apenas dependências Python
+3.  make system-deps - Apenas Graphviz no sistema
+4.  make test       - Testa todas as dependências
+5.  make preprocess - Executa pré-processamento
+6.  make train      - Executa treinamento
+7.  make dataset    - Executa processamento do dataset
+8.  make clean      - Remove venv e arquivos temporários
+9.  make activate   - Comando para ativar o venv
+10.  make help       - Mostra esta ajuda
+
+Para a configuração inicial do ambiente, basta utilizar o comando
+
+`make system-deps`
 
 ## 2 - Coleta e pré processamento de dados
 
@@ -19,19 +30,19 @@ Após a configuração do ambiente, será necessário preparar os dados que ser�
 
 ![image](https://github.com/user-attachments/assets/3a00aeb1-468c-40c7-a866-f6710fdaf47c)
 
-4. Com os arquivos nos diretórios esperados, executar o script dataset.py com `python3 dataset.py`
+4. Com os arquivos nos diretórios esperados, executar o script dataset.py com `make dataset`
 5. Após a execução do script, as globalpos vão ser associadas às pointclouds e salvas no subdiretório data/output, como na imagem em anexo:
    
 ![image](https://github.com/user-attachments/assets/d557eea4-bed6-4553-9574-b6b9e4d6100f)
 
-6. Após isso, executar o script preprocessor.py com `python3 preprocessor.py`
+6. Após isso, executar o script preprocessor.py com `make preprocess.py`
 7. Quando a execução for finalizada, os dados de treino se encontrarão no dataset entitulado complete_training_data.npz no diretório training_data, como em anexo:
 
 ![image](https://github.com/user-attachments/assets/79730d22-d18b-443b-b71e-4947e4f26b00)
 
 ## 3 - Treino e teste do modelo via Deep Learning
 
-1. Executar o script pointnet.py com `python3 pointnet.py`
+1. Executar o script pointnet.py com `make train`
 2. O desempenho do treino pode ser acompanhado na imagem training_metrics.png presente no mesmo diretório que o script, como no exemplo:
 
 ![image](https://github.com/user-attachments/assets/b00a7991-9ccc-4f34-a6d0-383b5da6f13c)
