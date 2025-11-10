@@ -3,22 +3,9 @@
 ## 1 - Configuração de Ambiente
 
 Para realizar a criação de um ambiente virtual e instalação das dependências necessárias para a execução do módulo, favor seguir os passos após clonar o repositório. O projeto conta com um 
-arquivo Makefile para deixar a configuração de ambiente conveniente, os comandos são listados a seguir:
+arquivo Makefile para auxiliar na execução das etapas do processo de treino e teste, os comandos podem ser visualizados com a opção `make help` no diretório raiz do projeto.
 
-1.  make all        - Setup completo (venv + dependências + testes)
-2.  make install    - Apenas dependências Python
-3.  make system-deps - Apenas Graphviz no sistema
-4.  make test       - Testa todas as dependências
-5.  make preprocess - Executa pré-processamento
-6.  make train      - Executa treinamento
-7.  make dataset    - Executa processamento do dataset
-8.  make clean      - Remove venv e arquivos temporários
-9.  make activate   - Comando para ativar o venv
-10.  make help       - Mostra esta ajuda
-
-Para a configuração inicial do ambiente, basta utilizar o comando
-
-`make system-deps`
+Para a configuração inicial do ambiente, basta utilizar o comando `make system-deps`
 
 ## 2 - Coleta e pré processamento de dados
 
