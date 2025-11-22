@@ -12,11 +12,16 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from torchviz import make_dot
 
+#Treino
 NUM_EPOCHS = 3000
 NUM_POINTS = 8000
+
+#Early Stopping
 PATIENCE = 0 #Critério para parada prévia, mantenha em 0 para desativar
 MIN_DELTA = 0.001
 MONITOR_METRIC = 'test_loss' # Pode mudar para 'r2_score', 'test_mae', etc.
+
+#Scheduler
 OPTIMIZER_LR = 0.01 #Learning rate inicial do otimizador
 
 class EarlyStopping:
@@ -637,7 +642,7 @@ if __name__ == "__main__":
         # Exemplo de predição
         sample_data = np.load(data_path, allow_pickle=True)
         sample_pc = sample_data['train'].item()['pointclouds'][0]
-        distance = predict_distance(model, sample_pc, num_points=NUM_POINTS)
+        distance = predict_distance(best_model, sample_pc, num_points=NUM_POINTS)
         print(f"\nExemplo de Predição: {distance:.2f} m")
         
     except Exception as e:

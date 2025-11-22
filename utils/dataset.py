@@ -377,9 +377,6 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None, s
         plt.show()
 
 def plot_individual_routes(data_dir, output_dir):
-    """
-    Gera gráficos individuais para cada arquivo globalpos
-    """
     # Encontra todos os arquivos globalpos
     files = sorted(Path(data_dir).glob('globalpos_*.txt'))
     
