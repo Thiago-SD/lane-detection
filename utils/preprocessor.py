@@ -204,9 +204,109 @@ def calculate_distances(sampled_data, median_path):
     
     return sampled_data
 
+def plot_distances_by_cluster(pontos_classificados_path, median_path, plot_dir=None):
+    # 1. Carregar pontos classificados
+    print(f"\nCarregando pontos classificados de: {pontos_classificados_path}")
+    dados = np.load(pontos_classificados_path, allow_pickle=True)
+    pontos = dados['pontos']
+    clusters = dados['clusters']
+    regioes = dados['regiao']
+    
+    # 2. Calcular distâncias
+    print("\nCalculando distâncias ao caminho mediano...")
+    
+    # Dicionário para armazenar distâncias por cluster e região
+    distancias_treino = []
+    distancias_teste = []
+    distancias_por_cluster = {}
+    theta_vehicle = 0.0
+
+    theta_vehicle = 0.0
+    
+    for ponto, cluster, regiao in zip(pontos, clusters, regioes):
+        distancia, _ = calculate_distance_to_path(ponto, theta_vehicle, median_path)
+        
+        # Para boxplot geral
+        if regiao == 'treino':
+            distancias_treino.append(distancia)
+        elif regiao == 'teste':
+            distancias_teste.append(distancia)
+        
+        # Para boxplot por cluster
+        if cluster not in distancias_por_cluster:
+            distancias_por_cluster[cluster] = []
+        distancias_por_cluster[cluster].append(distancia)
+
+
+    
+    # 3. Gerar boxplots
+    print("\nGerando boxplots...")
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(40, 20))
+    
+    labels_geral = [f'Treino\n(n={len(distancias_treino)})', 
+                    f'Teste\n(n={len(distancias_teste)})']
+    
+    bp1 = ax1.boxplot([distancias_treino, distancias_teste], 
+                      labels=labels_geral, 
+                      patch_artist=True, 
+                      widths=0.6)
+    
+    # Colorir
+    bp1['boxes'][0].set_facecolor('lightgreen')
+    bp1['boxes'][1].set_facecolor('lightcoral')
+    
+    ax1.set_title('Distâncias ao Caminho Médio - Geral', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Conjunto', fontsize=12)
+    ax1.set_ylabel('Distância (m)', fontsize=12)
+    ax1.grid(True, alpha=0.3, axis='y')
+    ax1.axhline(y=0, color='red', linestyle='--', alpha=0.5, linewidth=2, label='Caminho médio')
+    ax1.legend()
+    
+    # ===== SEGUNDO GRÁFICO: Por Cluster =====
+    clusters_ordenados = sorted(distancias_por_cluster.keys())
+    dados_clusters = [distancias_por_cluster[c] for c in clusters_ordenados]
+    labels_clusters = [f'C{c}\n(n={len(distancias_por_cluster[c])})' for c in clusters_ordenados]
+    
+    bp2 = ax2.boxplot(dados_clusters, 
+                      labels=labels_clusters, 
+                      patch_artist=True,
+                      vert=True,
+                      showfliers=True)  # Manter outliers para visualização
+    
+    # Colorir os boxes com gradiente
+    cores = plt.cm.viridis(np.linspace(0, 1, len(clusters_ordenados)))
+    for patch, cor in zip(bp2['boxes'], cores):
+        patch.set_facecolor(cor)
+        patch.set_alpha(0.7)
+    
+    ax2.set_title('Distâncias ao Caminho Médio - Por Cluster', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('Cluster', fontsize=12)
+    ax2.set_ylabel('Distância (m)', fontsize=12)
+    ax2.grid(True, alpha=0.3, axis='y')
+    ax2.axhline(y=0, color='red', linestyle='--', alpha=0.5, linewidth=2)
+    
+    # Rotacionar labels do eixo x para melhor legibilidade
+    ax2.set_xticklabels(labels_clusters, rotation=45, ha='right')
+    
+    plt.tight_layout()
+    
+    # Salvar ou mostrar
+    if plot_dir:
+        os.makedirs(plot_dir, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        arquivo_plot = os.path.join(plot_dir, f'boxplot_distancias_{timestamp}.png')
+        plt.savefig(arquivo_plot, dpi=150)
+        print(f"\nGráfico salvo em: {arquivo_plot}")
+    else:
+        plt.show()
+    
+    plt.close()
+    print("\nAnálise concluída!")
+
 def plot_with_distances(npz_data, median_path, split_line=None, test_side='left', 
                        plot_dir=None, max_points_to_plot=50):
-    plt.figure(figsize=(15, 10))
+    ax1 = plt.figure(figsize=(15, 8))
     line_color = 'black'
     
     # Extrai os dados do NPZ
@@ -231,22 +331,22 @@ def plot_with_distances(npz_data, median_path, split_line=None, test_side='left'
         if line['type'] == 'spline':
             u_vals = np.linspace(line['u_range'][0], line['u_range'][1], 20)
             x, y = splev(u_vals, line['tck'])
-            plt.plot(x, y, color=line_color, linewidth=1.5)
+            ax1.plot(x, y, color=line_color, linewidth=1.5)
         elif line['type'] == 'line':
             if line['representation'] == 'y=f(x)':
-                plt.plot(line['x_range'], line['y_range'], 
+                ax1.plot(line['x_range'], line['y_range'], 
                         color=line_color, linewidth=1.5)
             else:
-                plt.plot(line['x_range'], line['y_range'],
+                ax1.plot(line['x_range'], line['y_range'],
                         color=line_color, linewidth=1.5)
         elif line['type'] == 'point':
-            plt.scatter(line['point'][0], line['point'][1], 
+            ax1.scatter(line['point'][0], line['point'][1], 
                        color=line_color, s=50, marker='s')
     
     # 2. Plot dos centróides
     for i, centroid in enumerate(centroids):
-        plt.scatter(centroid[0], centroid[1], color='blue', marker='x', s=25)
-        plt.text(centroid[0], centroid[1], f'{i}', fontsize=10, 
+        ax1.scatter(centroid[0], centroid[1], color='blue', marker='x', s=25)
+        ax1.text(centroid[0], centroid[1], f'{i}', fontsize=10, 
                 ha='center', va='bottom', color='black')
     
     # 3. Adiciona a reta divisória
@@ -256,12 +356,12 @@ def plot_with_distances(npz_data, median_path, split_line=None, test_side='left'
             x_val = b
             y_min = np.min(all_points[:, 1])
             y_max = np.max(all_points[:, 1])
-            plt.plot([x_val, x_val], [y_min, y_max], 
+            ax1.plot([x_val, x_val], [y_min, y_max], 
                     'r--', linewidth=3, label=f'Divisão Treino/Teste (x = {b})')
         else:
             x_vals = np.array([np.min(all_points[:, 0]), np.max(all_points[:, 0])])
             y_vals = m * x_vals + b
-            plt.plot(x_vals, y_vals, 'r--', linewidth=3, label='Divisão Treino/Teste')
+            ax1.plot(x_vals, y_vals, 'r--', linewidth=3, label='Divisão Treino/Teste')
     
     # 4. Plot dos pontos (treino e teste)
     def plot_points_group(positions, distances, segments, color, label, max_points):
@@ -271,16 +371,16 @@ def plot_with_distances(npz_data, median_path, split_line=None, test_side='left'
             centroid = centroids[seg]
             
             # Plot do ponto
-            plt.scatter(pos[0], pos[1], c=color,
+            ax1.scatter(pos[0], pos[1], c=color,
                        s=80, alpha=0.7, edgecolors='black',
                        label=label if i == 0 else "")
             
             # Linha para o centróide
-            plt.plot([pos[0], centroid[0]], [pos[1], centroid[1]],
+            ax1.plot([pos[0], centroid[0]], [pos[1], centroid[1]],
                     'k-', linewidth=1, alpha=0.5)
             
             # Anotação
-            plt.annotate(f'{label[0]}{i}\n{dist:.1f}m',
+            ax1.annotate(f'{label[0]}{i}\n{dist:.1f}m',
                         xy=(pos[0], pos[1]),
                         xytext=(5,5), textcoords='offset points',
                         fontsize=8, bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7))
@@ -291,20 +391,21 @@ def plot_with_distances(npz_data, median_path, split_line=None, test_side='left'
     plot_points_group(test_positions, test_distances, test_segments,
                      'red', 'Teste', max_points_to_plot//2)
     
-    plt.gca().set_aspect('equal', adjustable='datalim')
-    plt.grid(True, alpha=0.3)
-    plt.title('Distâncias ao Caminho Médio')
-    plt.legend()
+    ax1.gca().set_aspect('equal', adjustable='datalim')
+    ax1.grid(True, alpha=0.3)
+    ax1.title('Distâncias ao Caminho Médio')
+    ax1.legend()
+
     
     if plot_dir:
         os.makedirs(plot_dir, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         file_name = f"{plot_dir}/distancias_centroides_{timestamp}.png"
-        plt.savefig(file_name, dpi=300, bbox_inches='tight')
+        ax1.savefig(file_name, dpi=300, bbox_inches='tight')
         print(f"Gráfico salvo em: {file_name}")
-        plt.close()
+        ax1.close()
     else:
-        plt.show()
+        ax1.show()
 
 def save_training_data(train_data, test_data, output_dir):
 
@@ -516,6 +617,22 @@ def main():
     }
 
     print(f"\nArquivo {os.path.join(data_dir, "caminho_mediano") + '/caminho_mediano.npz'} contendo o Caminho Mediano lido.")
+
+    caminho_mediano_dir = os.path.join(data_dir, "caminho_mediano")
+    arquivos_classificados = sorted([f for f in os.listdir(caminho_mediano_dir) 
+                                    if f.startswith('pontos_classificados_') and f.endswith('.npz')])
+
+    if arquivos_classificados:
+        arquivo_recente = os.path.join(caminho_mediano_dir, arquivos_classificados[-1])
+        print(f"\nAnalisando arquivo: {arquivo_recente}")
+
+    plot_distances_by_cluster(
+        pontos_classificados_path=arquivo_recente,
+        median_path=median_path,
+        plot_dir=output_dir
+    )
+
+    return
 
     split_params = median_path['split_params']
     

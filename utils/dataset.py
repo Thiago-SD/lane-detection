@@ -300,7 +300,7 @@ def calculate_median_path(all_data_arrays, split_line=None, test_side='left', pl
     return median_path
 
 
-def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None, split_line=None):
+def analyze_cluster_lines(points, centroids, lines_params, plot_dir=None, split_line=None):
     plt.figure(figsize=(40, 15))
     
     # Cria um mapa de cores fixo para os clusters
@@ -310,6 +310,33 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None, s
     
     plt.subplot(1, 2, 1)
     kmeans_labels = np.argmin(np.linalg.norm(points[:, np.newaxis] - centroids, axis=2), axis=1)
+
+    # Determina máscara de treino/teste se split_line for fornecido
+    train_mask = None
+    test_mask = None
+    
+    if split_line is not None:
+        m, b = split_line
+        if m == 0:  # Linha vertical
+            x = points[:, 0]
+            if TEST_SIDE == 'right':
+                test_mask = x > b
+            else:  # left
+                test_mask = x < b
+        else:
+            x = points[:, 0]
+            y = points[:, 1]
+            positions = y - (m * x + b) if abs(m) <= 1 else x - (m * y + b)
+            
+            if TEST_SIDE == 'above':
+                test_mask = positions > 0
+            else:
+                test_mask = positions < 0
+        
+        train_mask = ~test_mask
+
+    # Cria objeto com pontos classificados
+    regiao = np.where(train_mask, 'treino', 'teste') if train_mask is not None else np.array(['indefinido'] * len(points))
 
     # Pontos dos clusters (fundo)
     for i in range(len(centroids)):
@@ -371,8 +398,14 @@ def plot_cluster_lines_process(points, centroids, lines_params, plot_dir=None, s
             
     if plot_dir:
         os.makedirs(plot_dir, exist_ok=True)
-        plt.savefig(f"{plot_dir}/cluster_lines_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.png", dpi=300, bbox_inches='tight')
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        plt.savefig(f"{plot_dir}/cluster_lines_{timestamp}.png", dpi=300, bbox_inches='tight')
         plt.close()
+        np.savez_compressed(f"{plot_dir}/pontos_classificados_{timestamp}.npz",
+                pontos=points,
+                clusters=kmeans_labels,
+                timestamp=timestamp,
+                regiao=regiao)
     else:
         plt.show()
 
@@ -469,13 +502,15 @@ def main():
     median_path = calculate_median_path(globalpos_data, n_clusters=80, split_line=VERTICAL_LINE_PARAMS, test_side=TEST_SIDE)
 
     # Geração do plot
-    plot_cluster_lines_process(
+    analyze_cluster_lines(
         points=np.vstack([np.array([[item['x'], item['y']] for data in globalpos_data for item in data])]),
         centroids=median_path['centroids'],
         lines_params=median_path['lines_params'],
         split_line=VERTICAL_LINE_PARAMS,
         plot_dir=os.path.join(output_dir, "caminho_mediano")
     )
+
+    return
 
     # Salvar o Caminho mediano para uso no pré-processamento
     np.savez(
@@ -486,8 +521,6 @@ def main():
     lines_params=median_path['lines_params'],
     split_params=median_path['split_params']  # Salva separadamente
     )
-
-    return
     # Processar cada diretório de log
     for dir_name in dirs:
         log_dir_path = os.path.join(input_path, dir_name)

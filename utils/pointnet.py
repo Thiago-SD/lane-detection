@@ -594,7 +594,7 @@ def predict_distance(model, pointcloud, num_points=1000):
     return pred.item()
 
 
-if __name__ == "__main__":
+def main():
     data_path = os.path.join(os.path.dirname(__file__), "..", "data", "training_data", "complete_training_data.npz")
     model_dir = os.path.join(os.path.dirname(__file__), "..", "data", "models")
     os.makedirs(model_dir, exist_ok=True)
@@ -637,7 +637,7 @@ if __name__ == "__main__":
             shutil.rmtree(checkpoint_dir)
 
         # Avaliação
-        evaluate_model(best_model, test_dataset, plot_dir=model_dir, timestamp=timestamp)
+        evaluate_model(model, test_dataset, plot_dir=model_dir, timestamp=timestamp)
 
         # Exemplo de predição
         sample_data = np.load(data_path, allow_pickle=True)
@@ -648,3 +648,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\nErro durante a execução: {str(e)}")
         raise
+
+if __name__ == "__main__":
+    main()
