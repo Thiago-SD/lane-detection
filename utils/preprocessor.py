@@ -243,14 +243,20 @@ def plot_distances_by_cluster(pontos_classificados_path, median_path, plot_dir=N
     print("\nGerando boxplots...")
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(40, 20))
-    
+        
     labels_geral = [f'Treino\n(n={len(distancias_treino)})', 
                     f'Teste\n(n={len(distancias_teste)})']
     
     bp1 = ax1.boxplot([distancias_treino, distancias_teste], 
-                      labels=labels_geral, 
+                      tick_labels=labels_geral, 
                       patch_artist=True, 
                       widths=0.6)
+    
+    # Definir ticks do eixo y de metro em metro
+    todas_distancias = distancias_treino + distancias_teste
+    y_min = int(np.floor(np.min(todas_distancias)))
+    y_max = int(np.ceil(np.max(todas_distancias)))
+    ax1.set_yticks(np.arange(y_min, y_max + 1, 1))
     
     # Colorir
     bp1['boxes'][0].set_facecolor('lightgreen')
@@ -269,10 +275,16 @@ def plot_distances_by_cluster(pontos_classificados_path, median_path, plot_dir=N
     labels_clusters = [f'C{c}\n(n={len(distancias_por_cluster[c])})' for c in clusters_ordenados]
     
     bp2 = ax2.boxplot(dados_clusters, 
-                      labels=labels_clusters, 
+                      tick_labels=labels_clusters, 
                       patch_artist=True,
                       vert=True,
-                      showfliers=True)  # Manter outliers para visualização
+                      showfliers=True)  # Manter outliers para 
+
+    # Definir ticks do eixo y de metro em metro para o gráfico de clusters
+    todas_distancias_clusters = [dist for cluster_dists in dados_clusters for dist in cluster_dists]
+    y_min_clusters = int(np.floor(np.min(todas_distancias_clusters)))
+    y_max_clusters = int(np.ceil(np.max(todas_distancias_clusters)))
+    ax2.set_yticks(np.arange(y_min_clusters, y_max_clusters + 1, 1))
     
     # Colorir os boxes com gradiente
     cores = plt.cm.viridis(np.linspace(0, 1, len(clusters_ordenados)))
@@ -626,13 +638,12 @@ def main():
         arquivo_recente = os.path.join(caminho_mediano_dir, arquivos_classificados[-1])
         print(f"\nAnalisando arquivo: {arquivo_recente}")
 
+    #Elaborando boxplot das distâncias capturadas
     plot_distances_by_cluster(
         pontos_classificados_path=arquivo_recente,
         median_path=median_path,
         plot_dir=output_dir
     )
-
-    return
 
     split_params = median_path['split_params']
     

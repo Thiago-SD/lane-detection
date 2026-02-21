@@ -510,8 +510,6 @@ def main():
         plot_dir=os.path.join(output_dir, "caminho_mediano")
     )
 
-    return
-
     # Salvar o Caminho mediano para uso no pré-processamento
     np.savez(
     os.path.join(output_dir, "caminho_mediano", 'caminho_mediano.npz'),

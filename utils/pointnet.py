@@ -510,6 +510,67 @@ def plot_metrics(train_losses, test_losses, r2_scores, mae_scores, all_preds, al
     plt.close()
     print(f"\nGráficos de métricas salvos em {file_name}")
 
+def plot_error_distribution(metrics_file_path, plot_dir=None, metrica='mae'):
+    # Carregar métricas
+    print(f"\nCarregando métricas de: {metrics_file_path}")
+    dados = np.load(metrics_file_path, allow_pickle=True)
+    
+    # Extrair dados de erro
+    mae_scores = dados['mae_scores']
+    rmse_scores = dados['rmse_scores']
+    
+    #print(f"Épocas carregadas: {len(mae_scores)}")
+    #print(f"MAE - Média: {np.mean(mae_scores):.4f} | Mediana: {np.median(mae_scores):.4f}")
+    #print(f"RMSE - Média: {np.mean(rmse_scores):.4f} | Mediana: {np.median(rmse_scores):.4f}")
+    
+    # Criar figura
+    plt.figure(figsize=(10, 8))
+    
+    # Dados para o boxplot
+    dados_boxplot = [mae_scores, rmse_scores]
+    labels = ['MAE', 'RMSE']
+    
+    # Gerar boxplot
+    bp = plt.boxplot(dados_boxplot, tick_labels=labels, patch_artist=True, widths=0.6)
+    
+    # Colorir os boxes
+    cores = ['lightcoral', 'lightblue']
+    for patch, cor in zip(bp['boxes'], cores):
+        patch.set_facecolor(cor)
+        patch.set_alpha(0.7)
+    
+    # Ajustar intervalo do eixo y para focar na distribuição
+    y_min = min(np.min(mae_scores), np.min(rmse_scores)) * 0.95
+    y_max = max(np.max(mae_scores), np.max(rmse_scores)) * 1.05
+    plt.ylim(y_min, y_max)
+    
+    # Personalizar
+    plt.title('Distribuição dos Erros Durante o Treinamento\nMAE vs RMSE', fontsize=14, fontweight='bold')
+    plt.ylabel('Erro (m)', fontsize=12)
+    plt.grid(True, alpha=0.3, axis='y')
+    
+    # Adicionar texto com estatísticas
+    for i, (erros, label) in enumerate(zip([mae_scores, rmse_scores], ['MAE', 'RMSE'])):
+        plt.text(i+1, np.max(erros)*1.02, 
+                f'Média: {np.mean(erros):.3f}\nMediana: {np.median(erros):.3f}', 
+                ha='center', va='bottom', fontsize=10,
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    plt.tight_layout()
+    
+    # Salvar
+    if plot_dir:
+        os.makedirs(plot_dir, exist_ok=True)
+        timestamp_atual = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        arquivo_plot = os.path.join(plot_dir, f'mae_rmse_distribution_{timestamp_atual}.png')
+        plt.savefig(arquivo_plot, dpi=150, bbox_inches='tight')
+        print(f"\nGráfico salvo em: {arquivo_plot}")
+    else:
+        plt.show()
+    
+    plt.close()
+    print("\nAnálise concluída!")
+
 def evaluate_model(model, test_dataset, plot_dir = None, timestamp = None):
     print("\nAvaliando modelo no conjunto de teste...")
     model.eval()
@@ -598,7 +659,12 @@ def main():
     data_path = os.path.join(os.path.dirname(__file__), "..", "data", "training_data", "complete_training_data.npz")
     model_dir = os.path.join(os.path.dirname(__file__), "..", "data", "models")
     os.makedirs(model_dir, exist_ok=True)
-    
+
+    arquivos_metricas = sorted([f for f in os.listdir(model_dir) 
+                                    if f.startswith('training_metrics') and f.endswith('.npz')])
+    if arquivos_metricas:
+        arquivo_recente = os.path.join(model_dir, arquivos_metricas[-1])
+        print(f"\nAnalisando arquivo: {arquivo_recente}")    
     try:
         # Treina o modelo
         best_model, model, test_dataset, (train_losses, test_losses, r2_scores, mae_scores, rmse_scores) = train_model(
@@ -639,11 +705,16 @@ def main():
         # Avaliação
         evaluate_model(model, test_dataset, plot_dir=model_dir, timestamp=timestamp)
 
+
         # Exemplo de predição
         sample_data = np.load(data_path, allow_pickle=True)
         sample_pc = sample_data['train'].item()['pointclouds'][0]
         distance = predict_distance(best_model, sample_pc, num_points=NUM_POINTS)
         print(f"\nExemplo de Predição: {distance:.2f} m")
+
+        #Elaborando boxplot da distribuição de erros
+        plot_error_distribution(arquivo_recente, plot_dir=model_dir)
+
         
     except Exception as e:
         print(f"\nErro durante a execução: {str(e)}")
